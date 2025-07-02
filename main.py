@@ -1690,17 +1690,57 @@ async def process_and_add_reactions(bot_response: str, user_message: discord.Mes
         cleaned_response = bot_response
     
     # Add reactions if we have a message to react to
-    if user_message is not None:
+    if user_message is not None and reactions:
         for reaction in reactions:
             reaction = reaction.strip()
+            
+            # Convert custom emoji format if needed
+            converted_reaction = convert_emoji_for_reaction(reaction, user_message.guild)
+            
             try:
-                await user_message.add_reaction(reaction)
-            except discord.HTTPException:
+                await user_message.add_reaction(converted_reaction)
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(0.5)
+            except discord.HTTPException as e:
+                # Log the specific error for debugging
+                print(f"Failed to add reaction '{reaction}' -> '{converted_reaction}': {e}")
                 pass
-            except Exception:
+            except Exception as e:
+                print(f"Unexpected error adding reaction '{reaction}': {e}")
                 pass
     
     return cleaned_response
+
+def convert_emoji_for_reaction(emoji_text: str, guild: discord.Guild = None) -> str:
+    """Convert emoji text to proper format for reactions with improved matching"""
+    
+    # If it's already in proper Discord format, return as-is
+    if emoji_text.startswith('<:') or emoji_text.startswith('<a:'):
+        return emoji_text
+    
+    # If it's in :name: format, try to convert to proper format
+    if emoji_text.startswith(':') and emoji_text.endswith(':') and guild:
+        emoji_name = emoji_text.strip(':')
+        
+        # Try exact match first (case-sensitive)
+        for emoji in guild.emojis:
+            if emoji.name == emoji_name:
+                return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
+        
+        # Try case-insensitive match
+        emoji_name_lower = emoji_name.lower()
+        for emoji in guild.emojis:
+            if emoji.name.lower() == emoji_name_lower:
+                return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
+        
+        # Try partial matching (if the AI generates a slightly different name)
+        for emoji in guild.emojis:
+            if (emoji_name_lower in emoji.name.lower() or 
+                emoji.name.lower() in emoji_name_lower):
+                return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
+    
+    # If no conversion needed or found, return original (for Unicode emojis)
+    return emoji_text
 
 async def process_image_attachment(attachment: discord.Attachment, provider: str = "claude") -> dict:
     """Process image attachment and return provider-specific format"""
