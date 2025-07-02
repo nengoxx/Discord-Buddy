@@ -721,7 +721,8 @@ class MemoryManager:
             'my', 'your', 'his', 'her', 'its', 'our', 'their', 'this', 'that', 'these', 'those',
             'what', 'where', 'when', 'why', 'how', 'who', 'which', 'said', 'says', 'just', 'like',
             'get', 'got', 'go', 'went', 'come', 'came', 'see', 'saw', 'know', 'knew', 'think', 'thought',
-            'take', 'took', 'make', 'made', 'give', 'gave', 'tell', 'told', 'ask', 'asked'
+            'take', 'took', 'make', 'made', 'give', 'gave', 'tell', 'told', 'ask', 'asked',
+            'discord', 'server', 'channel', 'conversation', 'summary', 'between', 'users', 'bots'
         }
         
         # Filter out stop words, short words, and extract meaningful keywords

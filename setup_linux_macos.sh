@@ -149,6 +149,7 @@ if conda env list | grep -q "^$ENV_NAME "; then
 else
     echo -e "${YELLOW}Creating new conda environment '$ENV_NAME'... Be patient, depending on your machine this can take a while.${NC}"
     if [[ "$DEPS_TYPE" == "conda" ]]; then
+        echo -e "Creating env with file: $DEPS_TYPE"
         conda env create -f "$DEPS_FILE"
     else
         conda create -n "$ENV_NAME" python -y

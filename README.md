@@ -1,2 +1,2 @@
 # Discord-Buddy
-Discord AI companion bot
+Discord AI Companion Bot
