@@ -1528,20 +1528,14 @@ def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     # Pattern to match :emoji_name: format (simple Discord emoji syntax)
     simple_emoji_pattern = r':([a-zA-Z0-9_]+):'
     
-    # Find all matches first for debugging
-    matches = re.findall(simple_emoji_pattern, text)
-    
     def replace_emoji(match):
         emoji_name = match.group(1).lower()
         
         # If we have a guild, try to find the actual emoji
         if guild:
-            guild_emoji_names = [emoji.name.lower() for emoji in guild.emojis]
-            
             for emoji in guild.emojis:
                 if emoji.name.lower() == emoji_name:
-                    replacement = f"<:{emoji.name}:{emoji.id}>"
-                    return replacement
+                    return f"<:{emoji.name}:{emoji.id}>"
         
         # Check if it might be a standard Unicode emoji name
         common_unicode_emojis = {
@@ -2405,7 +2399,7 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             else:
                 return bot_response
 
-        # Clean malformed emojis (especially important for Gemini)
+        # Clean malformed emojis
         if bot_response and guild:
             bot_response = clean_malformed_emojis(bot_response, guild)
 
