@@ -82,6 +82,15 @@ Alternatively, in case you experience any issues with the scripts, you can creat
 
 IMPORTANT: The console needs to be working in the background for the bot to work.
 
+### APIs
+
+My old tutorials on how to get API Keys:
+- Claude (paid): https://rentry.org/marinaraclaude
+- Gemini (has a free quota): https://rentry.org/marinaraspaghetti
+
+Personally, I recommend grabbing a custom API Key from OpenRouter and using their free models, like DeepSeek:
+https://openrouter.ai/models?max_price=0
+
 ## Features
 
 ### 🤖 AI Discord Bot
