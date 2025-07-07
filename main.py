@@ -476,8 +476,8 @@ class AIProviderManager:
         return self.guild_custom_urls.get(guild_id, "http://localhost:1234/v1")
     
     async def generate_response(self, messages: List[Dict], system_prompt: str, 
-                              temperature: float = 1.0, user_id: int = None, 
-                              guild_id: int = None, is_dm: bool = False, max_tokens: int = 2000) -> str:
+                            temperature: float = 1.0, user_id: int = None, 
+                            guild_id: int = None, is_dm: bool = False, max_tokens: int = 2000) -> str:
         """Generate response using appropriate provider"""
         
         # For DMs, check if user has selected a specific server, otherwise use shared guild
@@ -489,19 +489,17 @@ class AIProviderManager:
                 # Fall back to shared guild's model
                 provider_name, model_name = self.get_guild_settings(guild_id)
             else:
-                # Default fallback
-                provider_name, model_name = "claude", "claude-3-7-sonnet-latest"
+                # No provider available
+                return "❌ No AI provider is configured. Please ensure you're in a server with the bot that has a configured AI provider."
         elif guild_id:
             provider_name, model_name = self.get_guild_settings(guild_id)
         else:
-            provider_name, model_name = "claude", "claude-3-7-sonnet-latest"
+            # No guild context and no provider
+            return "❌ No AI provider is configured. Please contact the bot administrator to set up API keys."
         
         provider = self.providers.get(provider_name)
         if not provider or not provider.is_available():
-            # Fallback to any available provider
-            for fallback_name, fallback_provider in self.providers.items():
-                if fallback_provider.is_available():
-                    return await fallback_provider.generate_response(messages, system_prompt, temperature, fallback_provider.get_default_model(), max_tokens)
+            # No fallback - just return error
             return "❌ No AI providers are available. Please contact the bot administrator to configure API keys."
         
         # Handle custom provider with dynamic URL
@@ -510,14 +508,7 @@ class AIProviderManager:
             url_guild_id = dm_server_selection.get(user_id) if is_dm and user_id in dm_server_selection else guild_id
             if url_guild_id:
                 custom_url = self.get_guild_custom_url(url_guild_id)
-                # Create a temporary OpenRouter provider instance with the guild's URL if the user connects to OR
-                # if "openrouter.ai" in custom_url:
-                    # temp_custom_provider = CustomProvider(OPENROUTER_API_KEY, custom_url)
-                # Create a temporary custom provider instance with the guild's URL
-                # else:
-                    # temp_custom_provider = CustomProvider(CUSTOM_API_KEY, custom_url)
                 temp_custom_provider = CustomProvider(CUSTOM_API_KEY, custom_url) 
-
                 return await temp_custom_provider.generate_response(messages, system_prompt, temperature, model_name, max_tokens)
         
         return await provider.generate_response(messages, system_prompt, temperature, model_name, max_tokens)
@@ -1327,17 +1318,18 @@ class RequestQueue:
                 # STORE THE ORIGINAL RESPONSE WITH REACTIONS FOR HISTORY
                 original_response_with_reactions = bot_response
 
-                # PROCESS REACTIONS FOR DISCORD DISPLAY
+                # PROCESS REACTIONS FIRST (this removes [REACT: X] from the response)
                 if message:
                     bot_response = await process_and_add_reactions(bot_response, message)
 
-                # EMOJI CLEANING
+                # THEN CLEAN EMOJIS (after reactions are processed)
                 if bot_response and guild:
                     bot_response = clean_malformed_emojis(bot_response, guild)
 
                 # ADD THE ORIGINAL RESPONSE (WITH REACTIONS) TO HISTORY
                 await add_to_history(channel_id, "assistant", original_response_with_reactions, guild_id=guild.id if guild else None)
                 
+                # Finally sanitize user mentions
                 if bot_response and not bot_response.startswith("❌"):
                     bot_response = sanitize_user_mentions(bot_response, guild)
 
@@ -1552,7 +1544,7 @@ def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     # Replace :emoji_name: patterns
     cleaned_text = re.sub(simple_emoji_pattern, replace_emoji, text)
     
-    # Clean up leftover malformed patterns (from your original code)
+    # Clean up leftover malformed patterns
     leftover_patterns = [
         r'<:[a-zA-Z0-9_]*$',           
         r'<[a-zA-Z0-9_]*$',            
@@ -1671,7 +1663,7 @@ async def process_and_add_reactions(bot_response: str, user_message: discord.Mes
     """Process bot response for reaction instructions and add reactions to user message"""
     if not bot_response:
         return bot_response
-    
+
     # Find all reaction instructions in the response
     reaction_pattern = r'\[REACT:\s*([^\]]+)\]'
     reactions = re.findall(reaction_pattern, bot_response)
@@ -1696,21 +1688,43 @@ async def process_and_add_reactions(bot_response: str, user_message: discord.Mes
                 # Small delay to avoid rate limiting
                 await asyncio.sleep(0.5)
             except discord.HTTPException as e:
-                # Log the specific error for debugging
-                print(f"Failed to add reaction '{reaction}' -> '{converted_reaction}': {e}")
-                pass
+                # More specific error handling
+                if "Unknown Emoji" in str(e):
+                    print(f"Failed to add reaction '{reaction}': Emoji not found in guild")
+                    # Try with a fallback emoji
+                    try:
+                        await user_message.add_reaction("❓")
+                        await asyncio.sleep(0.5)
+                    except:
+                        pass
+                elif "rate limited" in str(e).lower():
+                    print(f"Rate limited while adding reaction '{reaction}'")
+                    await asyncio.sleep(2)
+                else:
+                    print(f"Failed to add reaction '{reaction}' -> '{converted_reaction}': {e}")
             except Exception as e:
                 print(f"Unexpected error adding reaction '{reaction}': {e}")
-                pass
     
     return cleaned_response
 
 def convert_emoji_for_reaction(emoji_text: str, guild: discord.Guild = None) -> str:
     """Convert emoji text to proper format for reactions with improved matching"""
     
-    # If it's already in proper Discord format, return as-is
+    # If it's already in proper Discord format, validate it exists
     if emoji_text.startswith('<:') or emoji_text.startswith('<a:'):
-        return emoji_text
+        if guild:
+            # Extract emoji ID from the format <:name:id> or <a:name:id>
+            emoji_id_match = re.search(r':(\d+)>', emoji_text)
+            if emoji_id_match:
+                emoji_id = int(emoji_id_match.group(1))
+                # Check if this emoji exists in the guild
+                for emoji in guild.emojis:
+                    if emoji.id == emoji_id:
+                        return emoji_text  # Valid emoji
+                # If we reach here, the emoji doesn't exist in this guild
+                print(f"Warning: Custom emoji {emoji_text} not found in guild {guild.name}")
+                return "❓"  # Fallback to question mark
+        return emoji_text  # Return as-is if no guild to validate
     
     # If it's in :name: format, try to convert to proper format
     if emoji_text.startswith(':') and emoji_text.endswith(':') and guild:
@@ -1732,6 +1746,28 @@ def convert_emoji_for_reaction(emoji_text: str, guild: discord.Guild = None) -> 
             if (emoji_name_lower in emoji.name.lower() or 
                 emoji.name.lower() in emoji_name_lower):
                 return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
+        
+        # If no custom emoji found, check if it's a common Unicode emoji name
+        unicode_emoji_map = {
+            'smile': '😊',
+            'heart': '❤️',
+            'thumbsup': '👍',
+            'thumbsdown': '👎',
+            'fire': '🔥',
+            'star': '⭐',
+            'eyes': '👀',
+            'thinking': '🤔',
+            'shrug': '🤷',
+            'wave': '👋',
+            'clap': '👏',
+            'kiss': '😘',
+            'hug': '🤗',
+            'laugh': '😂',
+            'cry': '😢'
+        }
+        
+        if emoji_name_lower in unicode_emoji_map:
+            return unicode_emoji_map[emoji_name_lower]
     
     # If no conversion needed or found, return original (for Unicode emojis)
     return emoji_text
@@ -3753,14 +3789,15 @@ async def help_command(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="📚 Lore Commands (Context-Aware)",
-        value="**Adding information about users, works in both servers and DMs!**\n"
-            "`/lore_add [member] <lore>` - Add lore information about a specific user or yourself\n"
-            "`/lore_edit [member] <new_lore>` - Edit existing lore\n"
-            "`/lore_view [member]` - View lore entry\n"
-            "`/lore_remove [member]` - Remove lore\n"
-            "`/lore_list` - Show all lore entries",
-        inline=False
+    name="📚 Lore Commands (Context-Aware)",
+    value="**Adding information about users, works in both servers and DMs!**\n"
+        "`/lore_add [member] <lore>` - Add lore information about a specific user or yourself\n"
+        "`/lore_edit [member] <new_lore>` - Edit existing lore\n"
+        "`/lore_view [member]` - View lore entry\n"
+        "`/lore_remove [member]` - Remove lore\n"
+        "`/lore_list` - Show all lore entries\n"
+        "`/lore_auto_update [member]` - Let the bot update lore based on conversations (Admin only)",
+    inline=False
     )
 
     embed.add_field(
@@ -5961,6 +5998,191 @@ async def toggle_dm_enable(interaction: discord.Interaction, enabled: bool = Non
         await interaction.followup.send(f"❌ **DMs Disabled for {interaction.guild.name}!**\n\n"
                                        f"Server members will be told DMs are disabled and to contact server admins.\n"
                                        f"💡 Use `/dm_enable true` to re-enable DMs in the future.")
+
+@tree.command(name="lore_auto_update", description="Let the bot update lore entries based on what it learned (Admin only)")
+async def lore_auto_update(interaction: discord.Interaction, member: str = None):
+    """Let the bot automatically update lore based on conversation history"""
+    await interaction.response.defer(ephemeral=True)
+    
+    is_dm = isinstance(interaction.channel, discord.DMChannel)
+    
+    if is_dm:
+        # DM mode - update personal lore
+        user_id = interaction.user.id  # Define user_id here
+        history = get_conversation_history(interaction.channel.id)
+        if not history:
+            await interaction.followup.send("❌ No conversation history found to analyze!")
+            return
+        
+        # Get existing lore
+        existing_lore = lore_book.get_dm_entry(user_id)
+        
+        # Create instruction for AI to analyze and update lore
+        lore_instruction = f"""Analyze the conversation history and update the user's lore entry with new information you've learned about them.
+
+Current lore: {existing_lore if existing_lore else "No existing lore"}
+
+Instructions:
+- Extract key information about the user (personality, interests, background, preferences, etc.).
+- Merge new information with existing lore, don't duplicate.
+- Keep it concise and relevant for future conversations.
+- Format as a brief character description (max 300 characters).
+- Only include factual information explicitly mentioned by the user."""
+
+        # Generate updated lore
+        update_prompt = f"Based on our conversation, create an updated lore entry about {interaction.user.display_name}."
+        
+        # Use the AI to generate the update
+        temp_messages = [{"role": "user", "content": update_prompt}]
+        
+        guild = get_shared_guild(user_id)
+        guild_id = guild.id if guild else None
+
+        # Use appropriate guild ID for temperature
+        temp_guild_id = guild.id if guild else (dm_server_selection.get(user_id) if user_id else None)
+        if not temp_guild_id and user_id:
+            shared_guild = get_shared_guild(user_id)
+            temp_guild_id = shared_guild.id if shared_guild else None
+        
+        updated_lore = await ai_manager.generate_response(
+            messages=temp_messages,
+            system_prompt=lore_instruction,
+            temperature=get_temperature(temp_guild_id) if temp_guild_id else 1.0,
+            user_id=user_id,
+            guild_id=guild_id,
+            is_dm=is_dm,
+            max_tokens=500
+        )
+        
+        if updated_lore and not updated_lore.startswith("❌"):
+            # Show preview and confirm
+            embed = discord.Embed(
+                title="📖 Auto-Generated Lore Update",
+                description="Based on our conversation, here's what I've learned:",
+                color=0x00ff99
+            )
+            
+            if existing_lore:
+                embed.add_field(name="Current Lore", value=existing_lore[:300] + "..." if len(existing_lore) > 300 else existing_lore, inline=False)
+            
+            embed.add_field(name="Updated Lore", value=updated_lore[:300] + "..." if len(updated_lore) > 300 else updated_lore, inline=False)
+            
+            # Actually update the lore
+            lore_book.add_dm_entry(user_id, updated_lore)
+            
+            embed.set_footer(text="✅ Lore has been updated! Use /lore_view to see the full entry.")
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send("❌ Failed to generate lore update.")
+            
+    else:
+        # Server mode
+        if not check_admin_permissions(interaction):
+            await interaction.followup.send("❌ Only administrators can use auto-update in servers!")
+            return
+            
+        if member is None:
+            await interaction.followup.send("❌ Please specify a member to update lore for.\n"
+                                           "**Usage:** `/lore_auto_update <member>`")
+            return
+        
+        # Find member (same logic as other lore commands)
+        member_obj = None
+        if member.startswith('<@') and member.endswith('>'):
+            user_id_str = member.strip('<@!>')
+            try:
+                member_obj = interaction.guild.get_member(int(user_id_str))
+            except ValueError:
+                pass
+        elif member.isdigit():
+            member_obj = interaction.guild.get_member(int(member))
+        else:
+            member_lower = member.lower()
+            for guild_member in interaction.guild.members:
+                if (guild_member.name.lower() == member_lower or 
+                    guild_member.display_name.lower() == member_lower):
+                    member_obj = guild_member
+                    break
+        
+        if member_obj is None:
+            await interaction.followup.send(f"❌ Member '{member}' not found!")
+            return
+        
+        # Check if member has participated in recent conversations
+        if interaction.channel.id not in recent_participants or member_obj.id not in recent_participants[interaction.channel.id]:
+            await interaction.followup.send(f"❌ {member_obj.display_name} hasn't participated in recent conversations in this channel!")
+            return
+        
+        # Get conversation history
+        history = get_conversation_history(interaction.channel.id)
+        
+        # Filter messages involving this member
+        member_messages = []
+        for msg in history:
+            if msg["role"] == "user" and isinstance(msg["content"], str):
+                if f"<@{member_obj.id}>" in msg["content"] or member_obj.display_name in msg["content"]:
+                    member_messages.append(msg["content"])
+        
+        if not member_messages:
+            await interaction.followup.send(f"❌ No messages from {member_obj.display_name} found in recent history!")
+            return
+        
+        # Get existing lore
+        existing_lore = lore_book.get_entry(interaction.guild.id, member_obj.id)
+        
+        # Create instruction for AI
+        recent_activity = "\n".join(member_messages[-10:])  # Last 10 messages
+        lore_instruction = f"""Analyze {member_obj.display_name}'s messages and update their lore entry.
+
+Current lore: {existing_lore if existing_lore else "No existing lore"}
+
+Recent messages from {member_obj.display_name}:
+{recent_activity}
+
+Instructions:
+- Extract key information about them (personality, interests, role in server, etc.).
+- Merge with existing lore, don't duplicate.
+- Keep it concise and relevant.
+- Format as a brief character description (max 500 characters).
+- Only include factual information from their messages."""
+
+        # Generate updated lore
+        update_prompt = f"Based on the conversation, create an updated lore entry about {member_obj.display_name}."
+        
+        temp_messages = [{"role": "user", "content": update_prompt}]
+        
+        # Use the guild temperature for server mode
+        temp_guild_id = interaction.guild.id
+        
+        updated_lore = await ai_manager.generate_response(
+            messages=temp_messages,
+            system_prompt=lore_instruction,
+            temperature=get_temperature(temp_guild_id) if temp_guild_id else 1.0,
+            guild_id=interaction.guild.id,
+            is_dm=False,
+            max_tokens=500
+        )
+        
+        if updated_lore and not updated_lore.startswith("❌"):
+            # Show preview
+            embed = discord.Embed(
+                title=f"📖 Auto-Generated Lore Update for {member_obj.display_name}",
+                description="Based on recent conversations:",
+                color=0x00ff99
+            )
+            
+            if existing_lore:
+                embed.add_field(name="Current Lore", value=existing_lore[:300] + "..." if len(existing_lore) > 300 else existing_lore, inline=False)
+            
+            embed.add_field(name="Updated Lore", value=updated_lore[:300] + "..." if len(updated_lore) > 300 else updated_lore, inline=False)
+            
+            # Update the lore
+            lore_book.add_entry(interaction.guild.id, member_obj.id, updated_lore)
+            
+            embed.set_footer(text="✅ Lore has been updated!")
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send("❌ Failed to generate lore update.")
 
 # Start the bot
 if __name__ == "__main__":

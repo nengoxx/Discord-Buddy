@@ -82,7 +82,11 @@ Alternatively, in case you experience any issues with the scripts, you can creat
 
 IMPORTANT: The console needs to be working in the background for the bot to work.
 
-### APIs
+### Multiple Bots
+
+To have multiple bots, copy-paste your Discord Buddy folder and create for it a new application in Discord Developer App. Each bot needs a separate Discord Token and a console running.
+
+### API
 
 My old tutorials on how to get API Keys:
 - Claude (paid): https://rentry.org/marinaraclaude
