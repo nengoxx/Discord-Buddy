@@ -118,7 +118,7 @@ Decide how many messages are stored in the context with `/history_length`.
 - Context-Aware Responses - Remembers your conversations naturally!
 - Image & Voice Support - Bots see pictures, GIFs, and voice messages (dependant on provider).
 - Bots see edited messages but not the deleted ones.
-- Emoji Reactions - Bots can use and react with emojis (supports custom server emojis!).
+- Emoji Reactions - Bots can use and react with emojis (supports custom server emojis, including the animated ones!).
 - Bots see other (Buddy) bots as users!
 - Autonomous Chatting (Free Will) - Decide in which channels bots will trigger autonomously with `/autonomous_set`!
 

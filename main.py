@@ -1517,17 +1517,39 @@ def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     if not text:
         return text
     
+    # First, fix any double-wrapped emojis like <<:emoji:id>> or <<a:emoji:id>>
+    text = re.sub(r'<(<a?:[a-zA-Z0-9_]+:[0-9]+>)>', r'\1', text)
+    
+    # Store valid Discord emojis to protect them during cleaning
+    valid_emojis = []
+    emoji_placeholders = []
+    
+    # Find and temporarily replace all valid Discord emojis with placeholders
+    valid_emoji_pattern = r'<(a?):([a-zA-Z0-9_]+):([0-9]+)>'
+    matches = list(re.finditer(valid_emoji_pattern, text))
+    
+    for i, match in enumerate(matches):
+        placeholder = f"__EMOJI_PLACEHOLDER_{i}__"
+        valid_emojis.append(match.group(0))  # Store the full emoji
+        emoji_placeholders.append(placeholder)
+        text = text.replace(match.group(0), placeholder, 1)
+    
     # Pattern to match :emoji_name: format (simple Discord emoji syntax)
     simple_emoji_pattern = r':([a-zA-Z0-9_]+):'
     
     def replace_emoji(match):
+        full_match = match.group(0)
         emoji_name = match.group(1).lower()
         
-        # If we have a guild, try to find the actual emoji
+        # Check if this is already part of a placeholder (skip it)
+        if "__EMOJI_PLACEHOLDER_" in full_match:
+            return full_match
+        
+        # If we have a guild, try to find the actual emoji (both animated and static)
         if guild:
             for emoji in guild.emojis:
                 if emoji.name.lower() == emoji_name:
-                    return f"<:{emoji.name}:{emoji.id}>"
+                    return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
         
         # Check if it might be a standard Unicode emoji name
         common_unicode_emojis = {
@@ -1541,23 +1563,23 @@ def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
         # Remove unknown emoji
         return ""
     
-    # Replace :emoji_name: patterns
+    # Replace :emoji_name: patterns (but not placeholders)
     cleaned_text = re.sub(simple_emoji_pattern, replace_emoji, text)
     
-    # Clean up leftover malformed patterns
+    # Only clean up ACTUALLY malformed patterns (be more specific)
     leftover_patterns = [
-        r'<:[a-zA-Z0-9_]*$',           
-        r'<[a-zA-Z0-9_]*$',            
-        r'<:[a-zA-Z0-9_]*:[0-9]*$',    
-        r'<:[a-zA-Z0-9_]+:$',          
-        r'<:$',                        
-        r'<a:[a-zA-Z0-9_]*$',          
-        r'<a:[a-zA-Z0-9_]*:[0-9]*$',   
-        r'<a:$',                       
+        r'<a?:[a-zA-Z0-9_]*$',           # Incomplete at end of string
+        r'<a?:[a-zA-Z0-9_]*:[0-9]*$',    # Missing closing bracket at end
+        r'<a?:[a-zA-Z0-9_]+:$',          # Missing ID and closing bracket
+        r'<a?:$',                        # Just opening
     ]
     
     for pattern in leftover_patterns:
         cleaned_text = re.sub(pattern, "", cleaned_text)
+    
+    # Restore the valid emojis from placeholders
+    for placeholder, original_emoji in zip(emoji_placeholders, valid_emojis):
+        cleaned_text = cleaned_text.replace(placeholder, original_emoji)
     
     # Clean up multiple spaces
     cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
@@ -1646,11 +1668,11 @@ def get_guild_emojis(guild: discord.Guild) -> str:
     if not guild:
         return ""
     
-    # Get non-animated emojis
-    available_emojis = [emoji for emoji in guild.emojis if not emoji.animated]
+    # Get both animated and non-animated emojis
+    available_emojis = list(guild.emojis)  # This includes both animated and static
     
     if available_emojis:
-        # Randomly select up to 8 emojis (can show more now since format is simpler)
+        # Randomly select up to 10 emojis (mix of animated and static)
         selected_emojis = random.sample(available_emojis, min(10, len(available_emojis)))
         
         # Format them in simple :name: format
@@ -1730,7 +1752,7 @@ def convert_emoji_for_reaction(emoji_text: str, guild: discord.Guild = None) -> 
     if emoji_text.startswith(':') and emoji_text.endswith(':') and guild:
         emoji_name = emoji_text.strip(':')
         
-        # Try exact match first (case-sensitive)
+        # Try exact match first (case-sensitive) - check both animated and static
         for emoji in guild.emojis:
             if emoji.name == emoji_name:
                 return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
