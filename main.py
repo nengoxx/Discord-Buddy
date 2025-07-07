@@ -1705,93 +1705,69 @@ async def process_and_add_reactions(bot_response: str, user_message: discord.Mes
             # Convert custom emoji format if needed
             converted_reaction = convert_emoji_for_reaction(reaction, user_message.guild)
             
+            # Skip if the emoji was filtered out (from another server)
+            if converted_reaction is None:
+                continue
+            
             try:
                 await user_message.add_reaction(converted_reaction)
                 # Small delay to avoid rate limiting
                 await asyncio.sleep(0.5)
             except discord.HTTPException as e:
-                # More specific error handling
-                if "Unknown Emoji" in str(e):
-                    print(f"Failed to add reaction '{reaction}': Emoji not found in guild")
-                    # Try with a fallback emoji
-                    try:
-                        await user_message.add_reaction("❓")
-                        await asyncio.sleep(0.5)
-                    except:
-                        pass
-                elif "rate limited" in str(e).lower():
-                    print(f"Rate limited while adding reaction '{reaction}'")
-                    await asyncio.sleep(2)
-                else:
-                    print(f"Failed to add reaction '{reaction}' -> '{converted_reaction}': {e}")
+                # If it still fails, just skip it
+                # print(f"Failed to add reaction '{reaction}': {e}")
+                continue
             except Exception as e:
                 print(f"Unexpected error adding reaction '{reaction}': {e}")
+                continue
     
     return cleaned_response
 
 def convert_emoji_for_reaction(emoji_text: str, guild: discord.Guild = None) -> str:
     """Convert emoji text to proper format for reactions with improved matching"""
     
-    # If it's already in proper Discord format, validate it exists
+    # If it's already in proper Discord format, validate it exists in THIS guild
     if emoji_text.startswith('<:') or emoji_text.startswith('<a:'):
         if guild:
             # Extract emoji ID from the format <:name:id> or <a:name:id>
             emoji_id_match = re.search(r':(\d+)>', emoji_text)
             if emoji_id_match:
                 emoji_id = int(emoji_id_match.group(1))
-                # Check if this emoji exists in the guild
+                # Check if this emoji exists in THIS guild
                 for emoji in guild.emojis:
                     if emoji.id == emoji_id:
-                        return emoji_text  # Valid emoji
-                # If we reach here, the emoji doesn't exist in this guild
-                print(f"Warning: Custom emoji {emoji_text} not found in guild {guild.name}")
-                return "❓"  # Fallback to question mark
-        return emoji_text  # Return as-is if no guild to validate
+                        return emoji_text  # Valid emoji from this guild
+                # Emoji doesn't exist in this guild - remove it
+                return None
+        # No guild to validate against - remove it
+        return None
     
     # If it's in :name: format, try to convert to proper format
     if emoji_text.startswith(':') and emoji_text.endswith(':') and guild:
         emoji_name = emoji_text.strip(':')
         
-        # Try exact match first (case-sensitive) - check both animated and static
+        # Try to find this emoji in the current guild
         for emoji in guild.emojis:
-            if emoji.name == emoji_name:
+            if emoji.name.lower() == emoji_name.lower():
                 return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
         
-        # Try case-insensitive match
-        emoji_name_lower = emoji_name.lower()
-        for emoji in guild.emojis:
-            if emoji.name.lower() == emoji_name_lower:
-                return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
-        
-        # Try partial matching (if the AI generates a slightly different name)
-        for emoji in guild.emojis:
-            if (emoji_name_lower in emoji.name.lower() or 
-                emoji.name.lower() in emoji_name_lower):
-                return f"<{'a' if emoji.animated else ''}:{emoji.name}:{emoji.id}>"
-        
-        # If no custom emoji found, check if it's a common Unicode emoji name
+        # If no custom emoji found, check if it's a common Unicode emoji
         unicode_emoji_map = {
-            'smile': '😊',
-            'heart': '❤️',
-            'thumbsup': '👍',
-            'thumbsdown': '👎',
-            'fire': '🔥',
-            'star': '⭐',
-            'eyes': '👀',
-            'thinking': '🤔',
-            'shrug': '🤷',
-            'wave': '👋',
-            'clap': '👏',
-            'kiss': '😘',
-            'hug': '🤗',
-            'laugh': '😂',
-            'cry': '😢'
+            'smile': '😊', 'heart': '❤️', 'thumbsup': '👍', 'thumbsdown': '👎',
+            'fire': '🔥', 'star': '⭐', 'eyes': '👀', 'thinking': '🤔',
+            'shrug': '🤷', 'wave': '👋', 'clap': '👏', 'kiss': '😘',
+            'hug': '🤗', 'laugh': '😂', 'cry': '😢', 'angry': '😠',
+            'mad': '😡', 'love': '💕'
         }
         
+        emoji_name_lower = emoji_name.lower()
         if emoji_name_lower in unicode_emoji_map:
             return unicode_emoji_map[emoji_name_lower]
+        
+        # Unknown emoji - remove it
+        return None
     
-    # If no conversion needed or found, return original (for Unicode emojis)
+    # For Unicode emojis, return as-is
     return emoji_text
 
 async def process_image_attachment(attachment: discord.Attachment, provider: str = "claude") -> dict:
