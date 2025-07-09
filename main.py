@@ -1,3 +1,6 @@
+# Created by Marinara and Claude Sonnet 4
+# Shoutout to Il Dottore, my beloved.
+
 # Imports
 import datetime
 import speech_recognition as sr
@@ -406,24 +409,61 @@ class CustomProvider(AIProvider):
                 json.dump(self._vision_cache, f, indent=2)
         except Exception:
             pass
-    
+
+    def save_vision_cache(self):
+        """Save vision support cache to file with error handling"""
+        try:
+            # Ensure the directory exists
+            os.makedirs(DATA_DIR, exist_ok=True)
+            
+            # Always save, even if cache is empty
+            with open(VISION_CACHE_FILE, 'w') as f:
+                json.dump(self._vision_cache, f, indent=2)
+            
+            # print(f"Vision cache saved successfully with {len(self._vision_cache)} entries")
+            
+        except Exception as e:
+            print(f"Error saving vision cache: {e}")
+            # Don't raise the error, just log it
+
+    def load_vision_cache(self) -> Dict[str, bool]:
+        """Load vision support cache from file with error handling"""
+        try:
+            if os.path.exists(VISION_CACHE_FILE):
+                with open(VISION_CACHE_FILE, 'r') as f:
+                    cache_data = json.load(f)
+                    # print(f"Vision cache loaded successfully with {len(cache_data)} entries")
+                    return cache_data
+            else:
+                # print("No existing vision cache file found, starting fresh")
+                # Create empty file to ensure it exists
+                self._vision_cache = {}
+                self.save_vision_cache()
+                return {}
+        except Exception as e:
+            # print(f"Error loading vision cache: {e}")
+            return {}
+
     async def supports_vision_dynamic(self, model: str) -> bool:
         """Dynamically check if a model supports vision by testing with a small image"""
+        
+        # Check if client is available
+        if not self.api_key or not hasattr(self, 'client'):
+            return False
         
         # Check persistent cache first
         cache_key = f"{self.base_url}:{model}"
         if cache_key in self._vision_cache:
-            print(f"Vision cache hit for {model}: {self._vision_cache[cache_key]}")
             return self._vision_cache[cache_key]
         
-        print(f"Testing vision support for {model} (first time)...")
+        # print(f"Testing vision support for {model} (first time)...")
         
         try:
             # Create a minimal test message with a tiny image
             test_messages = [{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What do you see?"},
+                    {"type": "text", "text": "Can you see this?"},
                     {
                         "type": "image_url",
                         "image_url": {
@@ -436,40 +476,59 @@ class CustomProvider(AIProvider):
             }]
             
             # Try to make a request with minimal tokens to save costs
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=test_messages,
-                max_tokens=1,  # Minimal response
-                temperature=0  # Deterministic
-            )
-            
-            # If we get here without error, the model supports vision
-            print(f"✅ {model} supports vision!")
-            self._vision_cache[cache_key] = True
-            self.save_vision_cache()
-            return True
-            
-        except Exception as e:
-            error_str = str(e).lower()
-            print(f"Testing {model} vision support failed: {error_str}")
-            
-            # Check for specific vision-related errors that indicate the model exists but doesn't support vision
-            vision_error_indicators = [
-                "vision", "image", "multimodal", "unsupported content type",
-                "invalid content", "image_url not supported", "images are not supported",
-                "does not support images", "visual", "multimedia"
-            ]
-            
-            if any(keyword in error_str for keyword in vision_error_indicators):
-                # This suggests the model exists but doesn't support vision
-                print(f"❌ {model} doesn't support vision (confirmed)")
-                self._vision_cache[cache_key] = False
+            try:
+                response = await self.client.chat.completions.create(
+                    model=model,
+                    messages=test_messages,
+                    max_tokens=5,  # Very minimal response
+                    temperature=0  # Deterministic
+                )
+                
+                # If we get here without error, the model supports vision
+                # print(f"✅ {model} supports vision!")
+                self._vision_cache[cache_key] = True
                 self.save_vision_cache()
-                return False
-            else:
-                # Other errors might be temporary (network, auth, rate limit), don't cache
-                print(f"⚠️ {model} vision test inconclusive (error: {error_str})")
-                return False
+                return True
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                # print(f"Testing {model} vision support failed: {error_str}")
+                
+                # Check for specific vision-related errors
+                vision_error_indicators = [
+                    "vision", "image", "multimodal", "unsupported content type",
+                    "invalid content", "image_url not supported", "images are not supported",
+                    "does not support images", "visual", "multimedia", "unsupported message type",
+                    "content type not supported", "image content is not supported"
+                ]
+                
+                if any(keyword in error_str for keyword in vision_error_indicators):
+                    # This suggests the model exists but doesn't support vision
+                    # print(f"❌ {model} doesn't support vision (confirmed)")
+                    self._vision_cache[cache_key] = False
+                    self.save_vision_cache()
+                    return False
+                else:
+                    # For OpenRouter Gemini, let's assume it supports vision if the error isn't vision-specific
+                    if "gemini" in model.lower() and self.base_url and "openrouter" in self.base_url.lower():
+                        # print(f"✅ Assuming {model} on OpenRouter supports vision")
+                        self._vision_cache[cache_key] = True
+                        self.save_vision_cache()
+                        return True
+                    
+                    # Other errors might be temporary, don't cache
+                    # print(f"⚠️ {model} vision test inconclusive (error: {error_str})")
+                    return False
+                    
+        except Exception as outer_error:
+            # print(f"Unexpected error during vision testing for {model}: {outer_error}")
+            # For OpenRouter Gemini, assume vision support if we can't test
+            if "gemini" in model.lower() and self.base_url and "openrouter" in self.base_url.lower():
+                # print(f"✅ Assuming {model} on OpenRouter supports vision (test failed)")
+                self._vision_cache[cache_key] = True
+                self.save_vision_cache()
+                return True
+            return False
     
     async def generate_response(self, messages: List[Dict], system_prompt: str, temperature: float = 1.0, model: str = None, max_tokens: int = 2000) -> str:
         if not self.api_key:
@@ -478,7 +537,6 @@ class CustomProvider(AIProvider):
         try:
             model = model or self.get_default_model()
             
-            # Convert messages to OpenAI format
             formatted_messages = [{"role": "system", "content": system_prompt}]
             has_images = False
             
@@ -498,12 +556,13 @@ class CustomProvider(AIProvider):
                                 })
                             elif part.get("type") == "image_url":
                                 has_images = True
+                                # Keep OpenAI format as-is for custom providers
                                 openai_content.append(part)
                             elif part.get("type") == "image":
                                 has_images = True
-                                # Convert from other formats
-                                if "source" in part:
-                                    # Claude format
+                                # Convert other formats to OpenAI format
+                                if "source" in part and "data" in part["source"]:
+                                    # Claude format to OpenAI
                                     openai_content.append({
                                         "type": "image_url",
                                         "image_url": {
@@ -512,7 +571,7 @@ class CustomProvider(AIProvider):
                                         }
                                     })
                                 elif "data" in part and "media_type" in part:
-                                    # Gemini format
+                                    # Gemini format to OpenAI
                                     openai_content.append({
                                         "type": "image_url",
                                         "image_url": {
@@ -527,7 +586,7 @@ class CustomProvider(AIProvider):
                 elif isinstance(content, str) and content.strip():
                     formatted_messages.append({"role": role, "content": content})
             
-            # If we have images, check if model supports them (uses cache!)
+            # If we have images, test vision support only once
             if has_images:
                 supports_vision = await self.supports_vision_dynamic(model)
                 if not supports_vision:
@@ -579,6 +638,9 @@ class AIProviderManager:
             "custom": CustomProvider(CUSTOM_API_KEY),
         }
         
+        # Cache for custom providers with different URLs
+        self.custom_provider_cache = {}
+        
         self.guild_provider_settings: Dict[int, str] = {}
         self.guild_model_settings: Dict[int, str] = {}
         self.guild_custom_urls: Dict[int, str] = {}
@@ -586,8 +648,11 @@ class AIProviderManager:
         self.load_settings()
     
     def get_available_providers(self) -> Dict[str, bool]:
-        """Get available providers and their status"""
-        return {name: provider.is_available() for name, provider in self.providers.items()}
+        """Get dictionary of provider names and their availability status"""
+        return {
+            provider_name: provider.is_available() 
+            for provider_name, provider in self.providers.items()
+        }
     
     def get_provider_models(self, provider_name: str) -> List[str]:
         """Get available models for a specific provider"""
@@ -595,33 +660,52 @@ class AIProviderManager:
             return self.providers[provider_name].get_available_models()
         return []
     
-    def set_guild_provider(self, guild_id: int, provider_name: str, model_name: str = None, custom_url: str = None):
-        """Set provider, model, and optionally custom URL for a guild"""
-        if provider_name not in self.providers:
-            return False
-        
-        self.guild_provider_settings[guild_id] = provider_name
-        if model_name:
-            self.guild_model_settings[guild_id] = model_name
-        else:
-            self.guild_model_settings[guild_id] = self.providers[provider_name].get_default_model()
-        
-        # Store custom URL for custom provider
-        if provider_name == "custom" and custom_url:
-            self.guild_custom_urls[guild_id] = custom_url
-        
-        self.save_settings()
-        return True
-    
     def get_guild_settings(self, guild_id: int) -> Tuple[str, str]:
-        """Get guild's provider and model settings"""
+        """Get provider and model settings for a guild"""
         provider = self.guild_provider_settings.get(guild_id, "claude")
-        model = self.guild_model_settings.get(guild_id, self.providers[provider].get_default_model())
+        model = self.guild_model_settings.get(guild_id)
+        
+        # If no model is set, use the provider's default
+        if not model and provider in self.providers:
+            model = self.providers[provider].get_default_model()
+        
         return provider, model
     
     def get_guild_custom_url(self, guild_id: int) -> str:
-        """Get custom URL for a guild"""
+        """Get custom URL for a guild (for custom provider)"""
         return self.guild_custom_urls.get(guild_id, "http://localhost:1234/v1")
+    
+    def set_guild_provider(self, guild_id: int, provider: str, model: str = None, custom_url: str = None) -> bool:
+        """Set provider and model for a guild"""
+        try:
+            if provider not in self.providers:
+                return False
+            
+            self.guild_provider_settings[guild_id] = provider
+            
+            if model:
+                self.guild_model_settings[guild_id] = model
+            else:
+                # Use provider's default model
+                self.guild_model_settings[guild_id] = self.providers[provider].get_default_model()
+            
+            if provider == "custom" and custom_url:
+                self.guild_custom_urls[guild_id] = custom_url
+            
+            self.save_settings()
+            return True
+        except Exception:
+            return False
+    
+    def get_custom_provider(self, custom_url: str) -> CustomProvider:
+        """Get or create a custom provider instance for the given URL"""
+        if custom_url not in self.custom_provider_cache:
+            # print(f"Creating new CustomProvider instance for URL: {custom_url}")
+            self.custom_provider_cache[custom_url] = CustomProvider(CUSTOM_API_KEY, custom_url)
+        # else:
+            # print(f"Reusing existing CustomProvider instance for URL: {custom_url}")
+        
+        return self.custom_provider_cache[custom_url]
     
     async def generate_response(self, messages: List[Dict], system_prompt: str, 
                             temperature: float = 1.0, user_id: int = None, 
@@ -645,19 +729,25 @@ class AIProviderManager:
             # No guild context and no provider
             return "❌ No AI provider is configured. Please contact the bot administrator to set up API keys."
         
-        provider = self.providers.get(provider_name)
-        if not provider or not provider.is_available():
-            # No fallback - just return error
-            return "❌ No AI providers are available. Please contact the bot administrator to configure API keys."
-        
-        # Handle custom provider with dynamic URL
+        # Handle custom provider with cached instances
         if provider_name == "custom":
             # For DMs, use the selected server's custom URL, otherwise use current guild
             url_guild_id = dm_server_selection.get(user_id) if is_dm and user_id in dm_server_selection else guild_id
             if url_guild_id:
                 custom_url = self.get_guild_custom_url(url_guild_id)
-                temp_custom_provider = CustomProvider(CUSTOM_API_KEY, custom_url) 
-                return await temp_custom_provider.generate_response(messages, system_prompt, temperature, model_name, max_tokens)
+                # Use cached provider instance instead of creating new one
+                custom_provider = self.get_custom_provider(custom_url)
+                return await custom_provider.generate_response(messages, system_prompt, temperature, model_name, max_tokens)
+            else:
+                # Use default custom provider
+                provider = self.providers.get(provider_name)
+                return await provider.generate_response(messages, system_prompt, temperature, model_name, max_tokens)
+        
+        # Handle other providers normally
+        provider = self.providers.get(provider_name)
+        if not provider or not provider.is_available():
+            # No fallback - just return error
+            return "❌ No AI providers are available. Please contact the bot administrator to configure API keys."
         
         return await provider.generate_response(messages, system_prompt, temperature, model_name, max_tokens)
     
@@ -1924,10 +2014,13 @@ async def process_image_attachment(attachment: discord.Attachment, provider: str
         if not any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
             return None
             
+        # print(f"Processing image: {attachment.filename} for provider: {provider}")
+        
         async with aiohttp.ClientSession() as session:
             async with session.get(attachment.url) as resp:
                 if resp.status == 200:
                     image_data = await resp.read()
+                    # print(f"Downloaded image data: {len(image_data)} bytes")
                     
                     media_type_map = {
                         '.png': "image/png",
@@ -1938,26 +2031,32 @@ async def process_image_attachment(attachment: discord.Attachment, provider: str
                     file_ext = next((ext for ext in media_type_map.keys() if attachment.filename.lower().endswith(ext)), None)
                     media_type = media_type_map.get(file_ext, "image/jpeg")
                     
+                    # print(f"Detected media type: {media_type}")
+                    
                     if provider in ["openai", "custom"]:
-                        # OpenAI format - they prefer URLs, but we'll use base64 data URLs
+                        # OpenAI format - for custom providers (including OpenRouter)
                         base64_image = base64.b64encode(image_data).decode('utf-8')
-                        return {
+                        result = {
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:{media_type};base64,{base64_image}",
-                                "detail": "auto"
+                                "detail": "high"  # Changed from "auto" to "high"
                             }
                         }
+                        # print(f"Created OpenAI format image for custom provider")
+                        return result
                     elif provider == "gemini":
                         # Gemini format
-                        return {
+                        result = {
                             "type": "image",
                             "data": base64.b64encode(image_data).decode('utf-8'),
                             "media_type": media_type
                         }
+                        # print(f"Created Gemini format image")
+                        return result
                     else:
                         # Claude format
-                        return {
+                        result = {
                             "type": "image",
                             "source": {
                                 "type": "base64",
@@ -1965,7 +2064,13 @@ async def process_image_attachment(attachment: discord.Attachment, provider: str
                                 "data": base64.b64encode(image_data).decode('utf-8')
                             }
                         }
-    except Exception:
+                        # print(f"Created Claude format image")
+                        return result
+                else:
+                    # print(f"Failed to download image: HTTP {resp.status}")
+                    return None
+    except Exception as e:
+        # print(f"Error processing image: {e}")
         return None
 
 def get_conversation_history(channel_id: int) -> List[Dict]:
@@ -2116,7 +2221,7 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
             provider_name, _ = ai_manager.get_guild_settings(guild_id)
         
         # Process images if provider supports them
-        if provider_name in ["claude", "gemini", "openai"]:
+        if provider_name in ["claude", "gemini", "openai", "custom"]:
             image_parts = []
             text_parts = []
             
@@ -2132,7 +2237,7 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
                 if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
                     # Size check
                     if attachment.size > 20 * 1024 * 1024:  # 20MB limit for OpenAI, 3MB for others
-                        size_limit = "20MB" if provider_name == "openai" else "3MB"
+                        size_limit = "20MB" if provider_name == "openai" else "30MB"
                         text_parts.append({"type": "text", "text": f" [Image {attachment.filename} was too large (limit: {size_limit})]"})
                         continue
                     
@@ -2605,7 +2710,7 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
         print(f"Error in generate_response: {e}")
         return f"Sorry, I encountered an error: {str(e)}"
 
-async def generate_memory_summary(channel_id: int, num_messages: int, guild: discord.Guild = None, user_id: int = None) -> str:
+async def generate_memory_summary(channel_id: int, num_messages: int, guild: discord.Guild = None, user_id: int = None, username: str = None) -> str:
     """Generate memory summary from recent conversation history"""
     try:
         history = get_conversation_history(channel_id)
@@ -2638,12 +2743,15 @@ async def generate_memory_summary(channel_id: int, num_messages: int, guild: dis
                         formatted_messages.append(f"{current_persona}: {content}")
                     elif role == "user":
                         if is_dm:
-                            # In DMs, extract username from the content or use a fallback
-                            if user_id:
+                            # In DMs, use the passed username or extract from content
+                            if username:
+                                # Use the passed username
+                                user_display_name = username
+                            elif user_id:
                                 user = client.get_user(user_id)
-                                username = user.display_name if user and hasattr(user, 'display_name') else (user.name if user else "User")
+                                user_display_name = user.display_name if user and hasattr(user, 'display_name') else (user.name if user else "User")
                             else:
-                                username = "User"
+                                user_display_name = "User"
                             
                             # Check if the content already has username formatting
                             if content.startswith("[") and "used /" in content:
@@ -2654,7 +2762,7 @@ async def generate_memory_summary(channel_id: int, num_messages: int, guild: dis
                                 formatted_messages.append(content)
                             else:
                                 # Add username attribution
-                                formatted_messages.append(f"{username}: {content}")
+                                formatted_messages.append(f"{user_display_name}: {content}")
                         else:
                             # In servers, the content should already include username from add_to_history
                             # But let's clean it up in case it doesn't
@@ -2675,7 +2783,10 @@ async def generate_memory_summary(channel_id: int, num_messages: int, guild: dis
                         if role == "assistant":
                             formatted_messages.append(f"{current_persona}: {combined_text}")
                         else:
-                            formatted_messages.append(f"User: {combined_text}")
+                            if is_dm and username:
+                                formatted_messages.append(f"{username}: {combined_text}")
+                            else:
+                                formatted_messages.append(f"User: {combined_text}")
                             
             except Exception as msg_error:
                 print(f"Error processing message in memory generation: {msg_error}")
@@ -5036,11 +5147,13 @@ async def generate_memory(interaction: discord.Interaction, num_messages: int):
         
         async with interaction.channel.typing():
             if is_dm:
+                user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
                 memory_summary = await generate_memory_summary(
                     interaction.channel.id, 
                     num_messages, 
                     guild=None, 
-                    user_id=interaction.user.id
+                    user_id=interaction.user.id,
+                    username=user_name
                 )
                 context = "DM conversation"
             else:

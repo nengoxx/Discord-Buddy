@@ -95,6 +95,8 @@ My old tutorials on how to get API Keys:
 Personally, I recommend grabbing a custom API Key from OpenRouter and using their free models, like DeepSeek:
 https://openrouter.ai/models?max_price=0
 
+![image/png](https://i.imgur.com/90rHJyI.png)
+
 ## Features
 
 ### 🤖 AI Discord Bot
