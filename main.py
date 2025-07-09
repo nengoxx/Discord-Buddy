@@ -590,7 +590,7 @@ class CustomProvider(AIProvider):
             if has_images:
                 supports_vision = await self.supports_vision_dynamic(model)
                 if not supports_vision:
-                    print(f"Converting images to text for {model} (no vision support)")
+                    # print(f"Converting images to text for {model} (no vision support)")
                     # Convert images to text descriptions
                     for message in formatted_messages:
                         if isinstance(message.get("content"), list):
@@ -599,7 +599,7 @@ class CustomProvider(AIProvider):
                                 if part.get("type") == "text":
                                     text_parts.append(part["text"])
                                 elif part.get("type") == "image_url":
-                                    text_parts.append("[Image was provided but this model doesn't support vision]")
+                                    text_parts.append("[Image was provided but this model doesn't support vision!]")
                             message["content"] = " ".join(text_parts)
             
             response = await self.client.chat.completions.create(
