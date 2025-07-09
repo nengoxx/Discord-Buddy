@@ -78,6 +78,7 @@ WELCOME_SENT_FILE = os.path.join(DATA_DIR, "welcome_sent.json")
 DM_SERVER_SELECTION_FILE = os.path.join(DATA_DIR, "dm_server_selection.json")
 SERVER_PROMPT_DEFAULTS_FILE = os.path.join(DATA_DIR, "server_prompt_defaults.json")
 DM_ENABLED_FILE = os.path.join(DATA_DIR, "dm_enabled.json")
+VISION_CACHE_FILE = os.path.join(DATA_DIR, "vision_cache.json")
 
 # AI Provider Classes
 class AIProvider(ABC):
@@ -381,11 +382,94 @@ class CustomProvider(AIProvider):
     def __init__(self, api_key: str, base_url: str = "http://localhost:1234/v1"):
         super().__init__(api_key)
         self.base_url = base_url
+        self._vision_cache = self.load_vision_cache()  # Load from persistent storage
         if api_key:
             self.client = AsyncOpenAI(
                 api_key=api_key,
                 base_url=self.base_url
             )
+    
+    def load_vision_cache(self) -> Dict[str, bool]:
+        """Load vision support cache from file"""
+        try:
+            if os.path.exists(VISION_CACHE_FILE):
+                with open(VISION_CACHE_FILE, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+    
+    def save_vision_cache(self):
+        """Save vision support cache to file"""
+        try:
+            with open(VISION_CACHE_FILE, 'w') as f:
+                json.dump(self._vision_cache, f, indent=2)
+        except Exception:
+            pass
+    
+    async def supports_vision_dynamic(self, model: str) -> bool:
+        """Dynamically check if a model supports vision by testing with a small image"""
+        
+        # Check persistent cache first
+        cache_key = f"{self.base_url}:{model}"
+        if cache_key in self._vision_cache:
+            print(f"Vision cache hit for {model}: {self._vision_cache[cache_key]}")
+            return self._vision_cache[cache_key]
+        
+        print(f"Testing vision support for {model} (first time)...")
+        
+        try:
+            # Create a minimal test message with a tiny image
+            test_messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What do you see?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            # 1x1 white pixel PNG as base64 (super tiny)
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",
+                            "detail": "low"
+                        }
+                    }
+                ]
+            }]
+            
+            # Try to make a request with minimal tokens to save costs
+            response = await self.client.chat.completions.create(
+                model=model,
+                messages=test_messages,
+                max_tokens=1,  # Minimal response
+                temperature=0  # Deterministic
+            )
+            
+            # If we get here without error, the model supports vision
+            print(f"✅ {model} supports vision!")
+            self._vision_cache[cache_key] = True
+            self.save_vision_cache()
+            return True
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            print(f"Testing {model} vision support failed: {error_str}")
+            
+            # Check for specific vision-related errors that indicate the model exists but doesn't support vision
+            vision_error_indicators = [
+                "vision", "image", "multimodal", "unsupported content type",
+                "invalid content", "image_url not supported", "images are not supported",
+                "does not support images", "visual", "multimedia"
+            ]
+            
+            if any(keyword in error_str for keyword in vision_error_indicators):
+                # This suggests the model exists but doesn't support vision
+                print(f"❌ {model} doesn't support vision (confirmed)")
+                self._vision_cache[cache_key] = False
+                self.save_vision_cache()
+                return False
+            else:
+                # Other errors might be temporary (network, auth, rate limit), don't cache
+                print(f"⚠️ {model} vision test inconclusive (error: {error_str})")
+                return False
     
     async def generate_response(self, messages: List[Dict], system_prompt: str, temperature: float = 1.0, model: str = None, max_tokens: int = 2000) -> str:
         if not self.api_key:
@@ -394,7 +478,70 @@ class CustomProvider(AIProvider):
         try:
             model = model or self.get_default_model()
             
-            formatted_messages = [{"role": "system", "content": system_prompt}] + messages
+            # Convert messages to OpenAI format
+            formatted_messages = [{"role": "system", "content": system_prompt}]
+            has_images = False
+            
+            for msg in messages:
+                role = msg["role"]
+                content = msg["content"]
+                
+                if isinstance(content, list):
+                    # Complex content with text and images
+                    openai_content = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                openai_content.append({
+                                    "type": "text",
+                                    "text": part["text"]
+                                })
+                            elif part.get("type") == "image_url":
+                                has_images = True
+                                openai_content.append(part)
+                            elif part.get("type") == "image":
+                                has_images = True
+                                # Convert from other formats
+                                if "source" in part:
+                                    # Claude format
+                                    openai_content.append({
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{part['source']['media_type']};base64,{part['source']['data']}",
+                                            "detail": "high"
+                                        }
+                                    })
+                                elif "data" in part and "media_type" in part:
+                                    # Gemini format
+                                    openai_content.append({
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{part['media_type']};base64,{part['data']}",
+                                            "detail": "high"
+                                        }
+                                    })
+                    
+                    if openai_content:
+                        formatted_messages.append({"role": role, "content": openai_content})
+                
+                elif isinstance(content, str) and content.strip():
+                    formatted_messages.append({"role": role, "content": content})
+            
+            # If we have images, check if model supports them (uses cache!)
+            if has_images:
+                supports_vision = await self.supports_vision_dynamic(model)
+                if not supports_vision:
+                    print(f"Converting images to text for {model} (no vision support)")
+                    # Convert images to text descriptions
+                    for message in formatted_messages:
+                        if isinstance(message.get("content"), list):
+                            text_parts = []
+                            for part in message["content"]:
+                                if part.get("type") == "text":
+                                    text_parts.append(part["text"])
+                                elif part.get("type") == "image_url":
+                                    text_parts.append("[Image was provided but this model doesn't support vision]")
+                            message["content"] = " ".join(text_parts)
             
             response = await self.client.chat.completions.create(
                 model=model,
@@ -410,12 +557,13 @@ class CustomProvider(AIProvider):
     
     def get_available_models(self) -> List[str]:
         return [
+            "auto-detect",
             "custom-model",
             "local-model"
         ]
     
     def get_default_model(self) -> str:
-        return "custom-model"
+        return "auto-detect"
     
     def is_available(self) -> bool:
         return bool(self.api_key)
@@ -1790,14 +1938,14 @@ async def process_image_attachment(attachment: discord.Attachment, provider: str
                     file_ext = next((ext for ext in media_type_map.keys() if attachment.filename.lower().endswith(ext)), None)
                     media_type = media_type_map.get(file_ext, "image/jpeg")
                     
-                    if provider == "openai":
+                    if provider in ["openai", "custom"]:
                         # OpenAI format - they prefer URLs, but we'll use base64 data URLs
                         base64_image = base64.b64encode(image_data).decode('utf-8')
                         return {
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:{media_type};base64,{base64_image}",
-                                "detail": "high"  # Can be "low", "high", or "auto"
+                                "detail": "auto"
                             }
                         }
                     elif provider == "gemini":
