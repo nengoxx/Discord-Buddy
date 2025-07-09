@@ -1602,7 +1602,7 @@ class RequestQueue:
         except Exception as e:
             print(f"Error processing request: {e}")
             try:
-                await message.channel.send(f"❌ Sorry, I encountered an error processing your request: {str(e)}")
+                return f"❌ Sorry, I encountered an error processing your request: {str(e)}"
             except:
                 pass
 
