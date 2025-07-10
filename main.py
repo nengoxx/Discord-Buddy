@@ -82,6 +82,7 @@ DM_SERVER_SELECTION_FILE = os.path.join(DATA_DIR, "dm_server_selection.json")
 SERVER_PROMPT_DEFAULTS_FILE = os.path.join(DATA_DIR, "server_prompt_defaults.json")
 DM_ENABLED_FILE = os.path.join(DATA_DIR, "dm_enabled.json")
 VISION_CACHE_FILE = os.path.join(DATA_DIR, "vision_cache.json")
+CUSTOM_PROMPTS_FILE = os.path.join(DATA_DIR, "custom_prompts.json")
 
 # AI Provider Classes
 class AIProvider(ABC):
@@ -1826,6 +1827,25 @@ def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     
     return cleaned_text
 
+def save_custom_prompts():
+    """Save custom prompts to file"""
+    save_data = {
+        "custom_prompts": {str(guild_id): prompts for guild_id, prompts in custom_prompts.items()}
+    }
+    save_json_data(CUSTOM_PROMPTS_FILE, save_data, convert_keys=False)
+
+def load_custom_prompts():
+    """Load custom prompts from file"""
+    data = load_json_data(CUSTOM_PROMPTS_FILE, convert_keys=False)
+    custom_prompts_data = {}
+    if "custom_prompts" in data:
+        for guild_id_str, prompts in data["custom_prompts"].items():
+            custom_prompts_data[int(guild_id_str)] = prompts
+    return custom_prompts_data
+
+# Load custom prompts data
+custom_prompts = load_custom_prompts()
+
 # Global state variables
 conversations: Dict[int, List[Dict]] = {}
 channel_prompt_settings: Dict[int, str] = load_json_data(PROMPT_SETTINGS_FILE)
@@ -1844,6 +1864,7 @@ server_prompt_defaults: Dict[int, str] = load_json_data(SERVER_PROMPT_DEFAULTS_F
 guild_dm_enabled: Dict[int, bool] = load_json_data(DM_ENABLED_FILE)
 bot_persona_name: str = "Assistant"
 recently_deleted_dm_messages: Dict[int, Set[int]] = {}
+custom_prompts: Dict[int, Dict[str, Dict[str, str]]] = {}
 
 # Initialize managers
 lore_book = LoreBook()
@@ -2490,29 +2511,38 @@ def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = N
             server_style = server_prompt_defaults.get(guild_id) if guild_id else None
             prompt_type = server_style if server_style else "conversational"
     
-    # Choose between DM and server prompts
-    if is_dm:
-        prompt_map = {
-            "conversational": CONVERSATIONAL_DM_SYSTEM_PROMPT,
-            "asterisk": ASTERISK_ROLEPLAY_DM_PROMPT,
-            "narrative": NARRATIVE_ROLEPLAY_DM_PROMPT,
-            "conversational nsfw": CONVERSATIONAL_DM_SYSTEM_PROMPT_NSFW,
-            "asterisk nsfw": ASTERISK_ROLEPLAY_DM_PROMPT_NSFW,
-            "narrative nsfw": NARRATIVE_ROLEPLAY_DM_PROMPT_NSFW
-        }
-        system_prompt = prompt_map.get(prompt_type, CONVERSATIONAL_DM_SYSTEM_PROMPT).format(username=username or "this user")
+    # Check if it's a custom prompt
+    if guild_id and guild_id in custom_prompts and prompt_type in custom_prompts[guild_id]:
+        # Use custom prompt
+        custom_prompt_data = custom_prompts[guild_id][prompt_type]
+        if is_dm:
+            system_prompt = custom_prompt_data["prompt"].format(username=username or "this user")
+        else:
+            system_prompt = custom_prompt_data["prompt"]
     else:
-        prompt_map = {
-            "conversational": CONVERSATIONAL_SYSTEM_PROMPT,
-            "asterisk": ASTERISK_ROLEPLAY_PROMPT,
-            "narrative": NARRATIVE_ROLEPLAY_PROMPT,
-            "conversational nsfw": CONVERSATIONAL_SYSTEM_PROMPT_NSFW,
-            "asterisk nsfw": ASTERISK_ROLEPLAY_PROMPT_NSFW,
-            "narrative nsfw": NARRATIVE_ROLEPLAY_PROMPT_NSFW
-        }
-        system_prompt = prompt_map.get(prompt_type, CONVERSATIONAL_SYSTEM_PROMPT)
+        # Use built-in prompts
+        if is_dm:
+            prompt_map = {
+                "conversational": CONVERSATIONAL_DM_SYSTEM_PROMPT,
+                "asterisk": ASTERISK_ROLEPLAY_DM_PROMPT,
+                "narrative": NARRATIVE_ROLEPLAY_DM_PROMPT,
+                "conversational nsfw": CONVERSATIONAL_DM_SYSTEM_PROMPT_NSFW,
+                "asterisk nsfw": ASTERISK_ROLEPLAY_DM_PROMPT_NSFW,
+                "narrative nsfw": NARRATIVE_ROLEPLAY_DM_PROMPT_NSFW
+            }
+            system_prompt = prompt_map.get(prompt_type, CONVERSATIONAL_DM_SYSTEM_PROMPT).format(username=username or "this user")
+        else:
+            prompt_map = {
+                "conversational": CONVERSATIONAL_SYSTEM_PROMPT,
+                "asterisk": ASTERISK_ROLEPLAY_PROMPT,
+                "narrative": NARRATIVE_ROLEPLAY_PROMPT,
+                "conversational nsfw": CONVERSATIONAL_SYSTEM_PROMPT_NSFW,
+                "asterisk nsfw": ASTERISK_ROLEPLAY_PROMPT_NSFW,
+                "narrative nsfw": NARRATIVE_ROLEPLAY_PROMPT_NSFW
+            }
+            system_prompt = prompt_map.get(prompt_type, CONVERSATIONAL_SYSTEM_PROMPT)
 
-    # Handle DM personality settings
+    # Handle DM personality settings (rest of function remains the same)
     if is_dm and user_id:
         if user_id in dm_manager.dm_personalities:
             preferred_guild_id, preferred_personality = dm_manager.dm_personalities[user_id]
@@ -2551,7 +2581,7 @@ def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = N
         elif is_dm:
             combined_prompt += f"\n\n<emojis>Available emojis:\nYou may use all the standard emojis, for example: 💀 🤔 ❤️ 😠 etc. Add spaces or new lines after them. Limit their usage.\nREACTIONS: You can also react to the user's messages with emojis! To add a reaction, include [REACT: emoji] anywhere in your response. Example: [REACT: 😄]. Occasionally, react to show emotion, agreement, humor, or acknowledgment.</emojis>"
 
-    # Add relevant memories
+    # Add relevant memories (rest of function remains the same)
     if query:
         if is_dm and user_id:
             # Use DM memories
@@ -3995,7 +4025,7 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name="📝 Basic Usage",
+        name="❓ Basic Usage",
         value="• **Activate by mentions!** Mention the bot (@botname) to chat directly\n• **Remembers the chat!** Bot stores conversation history automatically\n• **Bot sees images, gifs and audio messages!** Bot can see the different media files you upload.\n• **Works in DMs!** Just message the bot directly anytime\n• **Reactions!** Bot can react to your messages with emojis",
         inline=False
     )
@@ -4016,6 +4046,16 @@ async def help_command(interaction: discord.Interaction):
         name="💬 Conversation Style Commands",
         value="`/prompt_set <style> [scope]` - Set conversation style (auto-detects DMs vs servers)\n`/prompt_info` - Show current style and available options",
         inline=False
+    )
+
+    embed.add_field(
+    name="📝 Custom Prompt Commands",
+    value="`/prompt_create <name> <display_name> <prompt> [nsfw]` - Create custom conversation prompt (Admin only)\n"
+          "`/prompt_list_custom` - List all custom server prompts\n"
+          "`/prompt_view <name>` - View custom prompt details\n"
+          "`/prompt_edit <name> [display_name] [prompt] [nsfw]` - Edit custom prompt (Admin only)\n"
+          "`/prompt_delete <name>` - Delete custom prompt (Admin only)",
+    inline=False
     )
     
     embed.add_field(
@@ -4086,6 +4126,276 @@ async def help_command(interaction: discord.Interaction):
     
     embed.set_footer(text="💡 Many commands are context-aware and work differently in servers vs DMs!\n🔒 No logs stored, your privacy is respected!\n🤖 Supports Claude, Gemini, OpenAI, and custom providers!")
     
+    await interaction.followup.send(embed=embed)
+
+# CUSTOM PROMPT COMMANDS
+
+@tree.command(name="prompt_create", description="Create a custom conversation prompt for this server (Admin only)")
+async def create_custom_prompt(interaction: discord.Interaction, name: str, display_name: str, prompt: str, nsfw: bool = False):
+    """Create a custom conversation prompt"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.guild:
+        await interaction.followup.send("❌ Custom prompts can only be created in servers!")
+        return
+    
+    # Check admin permissions
+    if not check_admin_permissions(interaction):
+        await interaction.followup.send("❌ Only administrators can create custom prompts!")
+        return
+    
+    # Validate input parameters
+    if not (2 <= len(name) <= 32):
+        await interaction.followup.send("❌ Prompt name must be between 2 and 32 characters.")
+        return
+    
+    if not (2 <= len(display_name) <= 64):
+        await interaction.followup.send("❌ Display name must be between 2 and 64 characters.")
+        return
+    
+    if not (50 <= len(prompt) <= 4000):
+        await interaction.followup.send("❌ Prompt must be between 50 and 4000 characters.")
+        return
+    
+    clean_name = name.lower().replace(" ", "_")
+    
+    # Prevent overriding built-in prompts
+    built_in_prompts = ["conversational", "asterisk", "narrative", "conversational_nsfw", "asterisk_nsfw", "narrative_nsfw"]
+    if clean_name in built_in_prompts:
+        await interaction.followup.send(f"❌ Cannot override built-in prompt '{clean_name}'! Choose a different name.")
+        return
+    
+    # Initialize guild's custom prompts if needed
+    if interaction.guild.id not in custom_prompts:
+        custom_prompts[interaction.guild.id] = {}
+    
+    # Check for existing prompt
+    if clean_name in custom_prompts[interaction.guild.id]:
+        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' already exists! Use `/prompt_edit` to modify it.")
+        return
+    
+    # Create custom prompt
+    custom_prompts[interaction.guild.id][clean_name] = {
+        "name": display_name,
+        "prompt": prompt,
+        "nsfw": nsfw
+    }
+    
+    save_custom_prompts()
+    
+    prompt_preview = prompt[:150] + ('...' if len(prompt) > 150 else '')
+    nsfw_marker = " 🔞" if nsfw else ""
+    
+    await interaction.followup.send(f"✅ **Created custom prompt: {display_name}{nsfw_marker}** (`{clean_name}`)!\n\n"
+                                   f"**Preview:** {prompt_preview}\n\n"
+                                   f"Use `/prompt_set {clean_name}` to activate it in channels.\n"
+                                   f"💡 **Tips:**\n"
+                                   f"• Use `{{username}}` in DM prompts for personalization\n"
+                                   f"• Include formatting instructions for consistency")
+
+@tree.command(name="prompt_list_custom", description="List all custom prompts for this server")
+async def list_custom_prompts(interaction: discord.Interaction):
+    """Display all custom prompts for the server"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.guild:
+        await interaction.followup.send("❌ Custom prompts can only be viewed in servers!")
+        return
+    
+    if interaction.guild.id not in custom_prompts or not custom_prompts[interaction.guild.id]:
+        await interaction.followup.send("❌ **No custom prompts found for this server.**\n\n"
+                                       "Use `/prompt_create` to create custom conversation prompts! (Admin only)\n\n"
+                                       "**Built-in prompts available:**\n"
+                                       "• `conversational` - Normal Discord chat\n"
+                                       "• `asterisk` - Roleplay with *actions*\n"
+                                       "• `narrative` - Rich storytelling\n"
+                                       "• `conversational nsfw`, `asterisk nsfw`, `narrative nsfw` - NSFW versions")
+        return
+    
+    embed = discord.Embed(
+        title="📝 Custom Server Prompts",
+        description=f"Custom conversation prompts for {interaction.guild.name}:",
+        color=0x00ff99
+    )
+    
+    # Group by NSFW status
+    sfw_prompts = []
+    nsfw_prompts = []
+    
+    for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
+        prompt_info = f"**`{prompt_name}`** - {prompt_data['name']}\n{prompt_data['prompt'][:100]}..."
+        
+        if prompt_data.get("nsfw", False):
+            nsfw_prompts.append(prompt_info)
+        else:
+            sfw_prompts.append(prompt_info)
+    
+    if sfw_prompts:
+        embed.add_field(
+            name="✅ SFW Prompts",
+            value="\n\n".join(sfw_prompts),
+            inline=False
+        )
+    
+    if nsfw_prompts:
+        embed.add_field(
+            name="🔞 NSFW Prompts", 
+            value="\n\n".join(nsfw_prompts),
+            inline=False
+        )
+    
+    embed.set_footer(text="Use /prompt_set <name> to activate • /prompt_edit to modify (Admin) • /prompt_delete to remove (Admin)")
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="prompt_edit", description="Edit a custom conversation prompt (Admin only)")
+async def edit_custom_prompt(interaction: discord.Interaction, name: str, display_name: str = None, prompt: str = None, nsfw: bool = None):
+    """Edit an existing custom prompt"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.guild:
+        await interaction.followup.send("❌ Custom prompts can only be edited in servers!")
+        return
+    
+    # Check admin permissions
+    if not check_admin_permissions(interaction):
+        await interaction.followup.send("❌ Only administrators can edit custom prompts!")
+        return
+    
+    clean_name = name.lower().replace(" ", "_")
+    
+    # Check if prompt exists
+    if (interaction.guild.id not in custom_prompts or 
+        clean_name not in custom_prompts[interaction.guild.id]):
+        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!\n"
+                                       "Use `/prompt_list_custom` to see available custom prompts.")
+        return
+    
+    # Update provided fields
+    updated_fields = []
+    
+    if display_name is not None:
+        if not (2 <= len(display_name) <= 64):
+            await interaction.followup.send("❌ Display name must be between 2 and 64 characters.")
+            return
+        custom_prompts[interaction.guild.id][clean_name]["name"] = display_name
+        updated_fields.append(f"Display name → {display_name}")
+    
+    if prompt is not None:
+        if not (50 <= len(prompt) <= 4000):
+            await interaction.followup.send("❌ Prompt must be between 50 and 4000 characters.")
+            return
+        custom_prompts[interaction.guild.id][clean_name]["prompt"] = prompt
+        prompt_preview = prompt[:100] + ('...' if len(prompt) > 100 else '')
+        updated_fields.append(f"Prompt → {prompt_preview}")
+    
+    if nsfw is not None:
+        custom_prompts[interaction.guild.id][clean_name]["nsfw"] = nsfw
+        updated_fields.append(f"NSFW → {'Yes 🔞' if nsfw else 'No ✅'}")
+    
+    if not updated_fields:
+        await interaction.followup.send("❌ No changes specified! Provide display_name, prompt, and/or nsfw to edit.")
+        return
+    
+    save_custom_prompts()
+    await interaction.followup.send(f"✅ **Updated custom prompt `{clean_name}`:**\n" + "\n".join(updated_fields))
+
+@tree.command(name="prompt_delete", description="Delete a custom conversation prompt (Admin only)")
+async def delete_custom_prompt(interaction: discord.Interaction, name: str):
+    """Delete a custom prompt"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.guild:
+        await interaction.followup.send("❌ Custom prompts can only be deleted in servers!")
+        return
+    
+    # Check admin permissions
+    if not check_admin_permissions(interaction):
+        await interaction.followup.send("❌ Only administrators can delete custom prompts!")
+        return
+    
+    clean_name = name.lower().replace(" ", "_")
+    
+    # Check if prompt exists
+    if (interaction.guild.id not in custom_prompts or 
+        clean_name not in custom_prompts[interaction.guild.id]):
+        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!")
+        return
+    
+    # Check if this prompt is currently being used anywhere
+    prompt_in_use = []
+    
+    # Check channel settings
+    for channel_id, channel_prompt in channel_prompt_settings.items():
+        if channel_prompt == clean_name:
+            channel = interaction.guild.get_channel(channel_id)
+            if channel:
+                prompt_in_use.append(f"#{channel.name}")
+    
+    # Check server default
+    if server_prompt_defaults.get(interaction.guild.id) == clean_name:
+        prompt_in_use.append("server default")
+    
+    if prompt_in_use:
+        await interaction.followup.send(f"⚠️ **Cannot delete prompt `{clean_name}`!**\n\n"
+                                       f"It's currently being used by: {', '.join(prompt_in_use)}\n\n"
+                                       f"Please change those settings first, then try deleting again.")
+        return
+    
+    # Delete prompt
+    display_name = custom_prompts[interaction.guild.id][clean_name]["name"]
+    del custom_prompts[interaction.guild.id][clean_name]
+    
+    save_custom_prompts()
+    await interaction.followup.send(f"🗑️ **Deleted custom prompt: {display_name}** (`{clean_name}`)!")
+
+@tree.command(name="prompt_view", description="View a specific custom prompt in full detail")
+async def view_custom_prompt(interaction: discord.Interaction, name: str):
+    """View a custom prompt in detail"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.guild:
+        await interaction.followup.send("❌ Custom prompts can only be viewed in servers!")
+        return
+    
+    clean_name = name.lower().replace(" ", "_")
+    
+    # Check if prompt exists
+    if (interaction.guild.id not in custom_prompts or 
+        clean_name not in custom_prompts[interaction.guild.id]):
+        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!\n"
+                                       "Use `/prompt_list_custom` to see available prompts.")
+        return
+    
+    prompt_data = custom_prompts[interaction.guild.id][clean_name]
+    
+    nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
+    
+    embed = discord.Embed(
+        title=f"📝 {prompt_data['name']}{nsfw_marker}",
+        description=f"**Prompt ID:** `{clean_name}`",
+        color=0xff6b6b if prompt_data.get("nsfw", False) else 0x00ff99
+    )
+    
+    # Split long prompts into multiple fields
+    prompt_text = prompt_data["prompt"]
+    if len(prompt_text) <= 1024:
+        embed.add_field(name="Prompt Content", value=prompt_text, inline=False)
+    else:
+        # Split into chunks
+        chunks = [prompt_text[i:i+1024] for i in range(0, len(prompt_text), 1024)]
+        for i, chunk in enumerate(chunks):
+            field_name = f"Prompt Content (Part {i+1})" if len(chunks) > 1 else "Prompt Content"
+            embed.add_field(name=field_name, value=chunk, inline=False)
+    
+    # Show usage instructions
+    embed.add_field(
+        name="💡 Usage",
+        value=f"**Activate:** `/prompt_set {clean_name} <scope>`\n"
+              f"**DM Note:** Use `{{username}}` for personalization in DM prompts",
+        inline=False
+    )
+    
+    embed.set_footer(text="Use /prompt_edit to modify (Admin) • /prompt_delete to remove (Admin)")
     await interaction.followup.send(embed=embed)
 
 # CONVERSATION STYLE COMMANDS
@@ -4200,9 +4510,25 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
 
 @set_prompt_style.autocomplete('style')
 async def style_autocomplete(interaction: discord.Interaction, current: str):
-    """Autocomplete for conversation styles"""
-    styles = ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]
-    return [app_commands.Choice(name=style.title(), value=style) for style in styles if current.lower() in style.lower()]
+    """Autocomplete for conversation styles including custom prompts"""
+    # Built-in styles
+    built_in_styles = ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]
+    choices = []
+    
+    # Add built-in styles
+    for style in built_in_styles:
+        if current.lower() in style.lower():
+            choices.append(app_commands.Choice(name=style.title(), value=style))
+    
+    # Add custom prompts for this guild
+    if interaction.guild and interaction.guild.id in custom_prompts:
+        for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
+            if current.lower() in prompt_name.lower() or current.lower() in prompt_data["name"].lower():
+                nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
+                display_name = f"{prompt_data['name']}{nsfw_marker} (Custom)"
+                choices.append(app_commands.Choice(name=display_name, value=prompt_name))
+    
+    return choices[:25]  # Discord limits to 25 choices
 
 @set_prompt_style.autocomplete('scope')
 async def scope_autocomplete(interaction: discord.Interaction, current: str):
@@ -4244,40 +4570,63 @@ async def show_prompt_info(interaction: discord.Interaction):
         
         title_prefix = "📢 Channel"
     
+    # Check if current style is custom
+    current_style_name = current_style
+    is_custom = False
+    if (not is_dm and interaction.guild and 
+        interaction.guild.id in custom_prompts and 
+        current_style in custom_prompts[interaction.guild.id]):
+        
+        custom_data = custom_prompts[interaction.guild.id][current_style]
+        current_style_name = f"{custom_data['name']} (Custom)"
+        if custom_data.get("nsfw", False):
+            current_style_name += " 🔞"
+        is_custom = True
+    
     embed = discord.Embed(
         title=f"🎭 {title_prefix} Conversation Styles",
-        description=f"Current style: **{current_style.title()}**" + ("" if is_dm else f"\nSource: {style_source}"),
+        description=f"Current style: **{current_style_name}**" + ("" if is_dm else f"\nSource: {style_source}"),
         color=0x00ff00
     )
     
+    # Built-in styles
     embed.add_field(
-        name="📝 Conversational",
-        value="Normal Discord chat style\n• No roleplay actions\n• Natural conversation\n• Uses emojis and casual language",
+        name="📝 Built-in Styles",
+        value="**Conversational** - Normal Discord chat\n"
+              "**Asterisk** - Roleplay with *actions*\n"
+              "**Narrative** - Rich storytelling\n"
+              "**+ NSFW versions** of each style",
         inline=False
     )
     
-    embed.add_field(
-        name="⭐ Asterisk Roleplay",
-        value="Traditional roleplay style\n• Uses *actions in asterisks*\n• Interactive roleplay scenarios\n• Mix of dialogue and actions",
-        inline=False
-    )
+    # Custom styles (server only)
+    if not is_dm and interaction.guild and interaction.guild.id in custom_prompts:
+        custom_list = []
+        for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
+            nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
+            custom_list.append(f"**`{prompt_name}`** - {prompt_data['name']}{nsfw_marker}")
+        
+        if custom_list:
+            embed.add_field(
+                name="🛠️ Custom Server Prompts",
+                value="\n".join(custom_list[:5]) + ("\n*...and more*" if len(custom_list) > 5 else ""),
+                inline=False
+            )
     
-    embed.add_field(
-        name="📚 Narrative Roleplay",
-        value="Rich storytelling style\n• Literary narrative prose\n• Detailed scene descriptions\n• Immersive story experiences",
-        inline=False
-    )
-
-    embed.add_field(
-        name="🔞 NSFW",
-        value="Uncensored NSFW versions of the classic prompts\n• Conversational\n• Asterisk Roleplay\n• Narrative Roleplay",
-        inline=False
-    )
+    if is_custom:
+        # Show preview of current custom prompt
+        custom_data = custom_prompts[interaction.guild.id][current_style]
+        preview = custom_data["prompt"][:200] + ("..." if len(custom_data["prompt"]) > 200 else "")
+        embed.add_field(
+            name="📖 Current Custom Prompt Preview",
+            value=preview,
+            inline=False
+        )
     
     if is_dm:
         embed.set_footer(text="Use /prompt_set <style> to change your DM conversation style!")
     else:
-        embed.set_footer(text="Use /prompt_set <style> <scope> to choose scope (channel or server-wide)!")
+        embed.set_footer(text="Use /prompt_set <style> <scope> • /prompt_list_custom for custom prompts • /prompt_create to make new (Admin)")
     
     await interaction.followup.send(embed=embed)
 
