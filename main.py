@@ -1819,8 +1819,10 @@ def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     for placeholder, original_emoji in zip(emoji_placeholders, valid_emojis):
         cleaned_text = cleaned_text.replace(placeholder, original_emoji)
     
-    # Clean up multiple spaces
-    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+    # Clean up multiple spaces but preserve line structure
+    lines = cleaned_text.split('\n')
+    cleaned_lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in lines]
+    cleaned_text = '\n'.join(cleaned_lines)
     
     return cleaned_text
 
