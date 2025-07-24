@@ -723,7 +723,7 @@ class AIProviderManager:
                 provider_name, model_name = self.get_guild_settings(guild_id)
             else:
                 # No provider available
-                return "❌ No AI provider is configured. Please ensure you're in a server with the bot that has a configured AI provider."
+                return "❌ No AI provider is configured. Please ensure you're in a server with the bot that has a configured AI provider. If you are, use `/dm_server_select` here to set it up."
         elif guild_id:
             provider_name, model_name = self.get_guild_settings(guild_id)
         else:
@@ -3392,6 +3392,11 @@ async def check_up_task():
 async def send_fun_command_response(interaction: discord.Interaction, response: str):
     """Helper function to clean and send fun command responses"""
     if response:
+        # Check for error responses and use dismissible error handler
+        if response.startswith("❌"):
+            await send_dismissible_error(interaction.channel, interaction.user, response)
+            return
+        
         # Remove reaction instructions but preserve surrounding spaces
         reaction_pattern = r'\s*\[REACT:\s*([^\]]+)\]\s*'
         cleaned_response = re.sub(reaction_pattern, ' ', response).strip()
