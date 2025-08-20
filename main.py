@@ -2036,6 +2036,12 @@ async def process_image_attachment(attachment: discord.Attachment, provider: str
     try:
         if not any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
             return None
+        
+        # CHECK SIZE BEFORE DOWNLOADING - This is the key fix!
+        max_size = 20 * 1024 * 1024 if provider == "openai" else 8 * 1024 * 1024  # 20MB for OpenAI, 8MB for others
+        if attachment.size > max_size:
+            print(f"Image {attachment.filename} too large ({attachment.size} bytes, max: {max_size})")
+            return None  # Return None to indicate we should skip this image
             
         # print(f"Processing image: {attachment.filename} for provider: {provider}")
         
@@ -2258,10 +2264,11 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
             # Process each attachment
             for attachment in attachments:
                 if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                    # Size check
-                    if attachment.size > 20 * 1024 * 1024:  # 20MB limit for OpenAI, 3MB for others
-                        size_limit = "20MB" if provider_name == "openai" else "30MB"
-                        text_parts.append({"type": "text", "text": f" [Image {attachment.filename} was too large (limit: {size_limit})]"})
+                    # Size check BEFORE processing
+                    max_size = 20 * 1024 * 1024 if provider_name == "openai" else 8 * 1024 * 1024
+                    if attachment.size > max_size:
+                        size_limit_mb = "20MB" if provider_name == "openai" else "8MB" 
+                        text_parts.append({"type": "text", "text": f" [Image {attachment.filename} was too large ({attachment.size // (1024*1024)}MB, limit: {size_limit_mb})]"})
                         continue
                     
                     try:
@@ -2272,7 +2279,7 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
                         else:
                             text_parts.append({"type": "text", "text": f" [Could not process image {attachment.filename}]"})
                     except Exception as e:
-                        print(f"Error processing image {attachment.filename}: {e}")
+                        # print(f"Error processing image {attachment.filename}: {e}")
                         text_parts.append({"type": "text", "text": f" [Error processing image {attachment.filename}]"})
                 else:
                     # Non-image attachment
