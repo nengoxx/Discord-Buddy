@@ -2031,17 +2031,105 @@ def convert_emoji_for_reaction(emoji_text: str, guild: discord.Guild = None) -> 
     # For Unicode emojis, return as-is
     return emoji_text
 
+def estimate_message_size(messages: List[Dict], system_prompt: str) -> int:
+    """Estimate the total size of the request in characters/tokens"""
+    total_size = len(system_prompt)
+    
+    for message in messages:
+        content = message.get("content", "")
+        if isinstance(content, str):
+            total_size += len(content)
+        elif isinstance(content, list):
+            # Handle complex content with images
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        total_size += len(part.get("text", ""))
+                    elif part.get("type") == "image":
+                        # Estimate image contributes roughly equivalent to 1000 characters
+                        total_size += 1000
+                    elif part.get("type") == "image_url":
+                        # OpenAI format images
+                        total_size += 1000
+    
+    return total_size
+
+def is_supported_file_type(filename: str) -> bool:
+    """Check if file type is supported for processing"""
+    supported_image_types = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
+    supported_audio_types = ['.mp3', '.wav', '.ogg', '.m4a', '.webm']
+    supported_text_types = ['.txt', '.md', '.json', '.csv', '.log']
+    
+    filename_lower = filename.lower()
+    return any(filename_lower.endswith(ext) for ext in 
+               supported_image_types + supported_audio_types + supported_text_types)
+
+def get_attachment_size_limit(attachment: discord.Attachment, provider: str = "claude") -> int:
+    """Get size limit based on attachment type and provider"""
+    filename_lower = attachment.filename.lower()
+    
+    # Image files
+    if any(filename_lower.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+        return 20 * 1024 * 1024 if provider == "openai" else 8 * 1024 * 1024  # 20MB for OpenAI, 8MB for others
+    
+    # Audio files for voice processing
+    elif any(filename_lower.endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.m4a', '.webm']):
+        return 25 * 1024 * 1024  # 25MB limit for audio files
+    
+    # Text files (can be included in context)
+    elif any(filename_lower.endswith(ext) for ext in ['.txt', '.md', '.json', '.csv', '.log']):
+        return 1 * 1024 * 1024  # 1MB limit for text files
+    
+    # All other files - very restrictive
+    else:
+        return 100 * 1024  # 100KB limit for other file types
+
+def should_process_attachment(attachment: discord.Attachment, provider: str = "claude") -> Tuple[bool, str]:
+    """Determine if attachment should be processed and return reason if not"""
+    filename_lower = attachment.filename.lower()
+    
+    # Check for unsupported/problematic file types
+    video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v']
+    large_doc_extensions = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx']
+    archive_extensions = ['.zip', '.rar', '.7z', '.tar', '.gz']
+    executable_extensions = ['.exe', '.msi', '.dmg', '.app', '.deb', '.rpm']
+    
+    # Block video files (too large and not useful for text AI)
+    if any(filename_lower.endswith(ext) for ext in video_extensions):
+        return False, f"Video files ({attachment.filename}) are not supported to prevent request size issues"
+    
+    # Block large document formats that require special processing
+    if any(filename_lower.endswith(ext) for ext in large_doc_extensions):
+        return False, f"Document files ({attachment.filename}) are not supported - please convert to text format"
+    
+    # Block archives and executables
+    if any(filename_lower.endswith(ext) for ext in archive_extensions + executable_extensions):
+        return False, f"Archive/executable files ({attachment.filename}) are not supported"
+    
+    # Check if file type is supported
+    if not is_supported_file_type(attachment.filename):
+        return False, f"File type not supported ({attachment.filename})"
+    
+    # Check file size
+    size_limit = get_attachment_size_limit(attachment, provider)
+    if attachment.size > size_limit:
+        size_limit_mb = size_limit / (1024 * 1024)
+        actual_size_mb = attachment.size / (1024 * 1024)
+        return False, f"File too large ({attachment.filename}: {actual_size_mb:.1f}MB, limit: {size_limit_mb:.1f}MB)"
+    
+    return True, ""
+
 async def process_image_attachment(attachment: discord.Attachment, provider: str = "claude") -> dict:
     """Process image attachment and return provider-specific format"""
     try:
         if not any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
             return None
         
-        # CHECK SIZE BEFORE DOWNLOADING - This is the key fix!
-        max_size = 20 * 1024 * 1024 if provider == "openai" else 8 * 1024 * 1024  # 20MB for OpenAI, 8MB for others
-        if attachment.size > max_size:
-            print(f"Image {attachment.filename} too large ({attachment.size} bytes, max: {max_size})")
-            return None  # Return None to indicate we should skip this image
+        # Use the new unified size checking
+        should_process, reason = should_process_attachment(attachment, provider)
+        if not should_process:
+            print(f"Skipping image: {reason}")
+            return None
             
         # print(f"Processing image: {attachment.filename} for provider: {provider}")
         
@@ -2261,49 +2349,95 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
                 else:
                     text_parts.append({"type": "text", "text": formatted_content})
             
-            # Process each attachment
+            # Process each attachment with comprehensive filtering
+            total_processed_size = 0
+            max_total_size = 50 * 1024 * 1024  # 50MB total limit for all attachments combined
+            
             for attachment in attachments:
+                # Check if we should process this attachment
+                should_process, reason = should_process_attachment(attachment, provider_name)
+                
+                if not should_process:
+                    # Add explanation for why attachment was skipped
+                    text_parts.append({"type": "text", "text": f" [{reason}]"})
+                    continue
+                
+                # Check total size limit
+                if total_processed_size + attachment.size > max_total_size:
+                    text_parts.append({"type": "text", "text": f" [Attachment {attachment.filename} skipped - total size limit exceeded]"})
+                    continue
+                
+                # Process based on file type
                 if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                    # Size check BEFORE processing
-                    max_size = 20 * 1024 * 1024 if provider_name == "openai" else 8 * 1024 * 1024
-                    if attachment.size > max_size:
-                        size_limit_mb = "20MB" if provider_name == "openai" else "8MB" 
-                        text_parts.append({"type": "text", "text": f" [Image {attachment.filename} was too large ({attachment.size // (1024*1024)}MB, limit: {size_limit_mb})]"})
-                        continue
-                    
+                    # Image processing
                     try:
                         image_data = await process_image_attachment(attachment, provider_name)
                         if image_data:
                             image_parts.append(image_data)
                             has_images = True
+                            total_processed_size += attachment.size
                         else:
                             text_parts.append({"type": "text", "text": f" [Could not process image {attachment.filename}]"})
                     except Exception as e:
-                        # print(f"Error processing image {attachment.filename}: {e}")
+                        print(f"Error processing image {attachment.filename}: {e}")
                         text_parts.append({"type": "text", "text": f" [Error processing image {attachment.filename}]"})
+                
+                elif any(attachment.filename.lower().endswith(ext) for ext in ['.txt', '.md', '.json', '.csv', '.log']):
+                    # Text file processing - read content if small enough
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(attachment.url) as resp:
+                                if resp.status == 200:
+                                    text_content = await resp.text()
+                                    # Limit text content length to prevent bloat
+                                    if len(text_content) > 5000:
+                                        text_content = text_content[:5000] + "... [truncated]"
+                                    text_parts.append({"type": "text", "text": f"\n[File content of {attachment.filename}]:\n{text_content}\n[End of file]"})
+                                    total_processed_size += attachment.size
+                                else:
+                                    text_parts.append({"type": "text", "text": f" [Could not read file {attachment.filename}]"})
+                    except Exception as e:
+                        print(f"Error processing text file {attachment.filename}: {e}")
+                        text_parts.append({"type": "text", "text": f" [Error reading file {attachment.filename}]"})
+                
                 else:
-                    # Non-image attachment
-                    text_parts.append({"type": "text", "text": f" [File: {attachment.filename}]"})
+                    # Other supported file types (like audio) - just mention them
+                    file_size_mb = attachment.size / (1024 * 1024)
+                    text_parts.append({"type": "text", "text": f" [File: {attachment.filename} ({file_size_mb:.1f}MB)]"})
+                    total_processed_size += attachment.size
             
             # Combine text and images into complex content
             if has_images:
                 message_content = text_parts + image_parts
             else:
-                # No valid images, use regular text content with attachment notes
+                # No valid images, use regular text content with filtered attachment notes
                 attachment_notes = []
                 for attachment in attachments:
-                    attachment_notes.append(f"[Attachment: {attachment.filename}]")
+                    should_process, reason = should_process_attachment(attachment, provider_name)
+                    if should_process:
+                        file_size_mb = attachment.size / (1024 * 1024)
+                        attachment_notes.append(f"[Attachment: {attachment.filename} ({file_size_mb:.1f}MB)]")
+                    else:
+                        attachment_notes.append(f"[{reason}]")
                 
                 if attachment_notes:
                     message_content = formatted_content + " " + " ".join(attachment_notes)
         else:
-            # Provider doesn't support images, add text descriptions
+            # Provider doesn't support images, add text descriptions with filtering
             attachment_parts = []
             for attachment in attachments:
+                # Check if we should process this attachment
+                should_process, reason = should_process_attachment(attachment, provider_name)
+                
+                if not should_process:
+                    attachment_parts.append(f"[{reason}]")
+                    continue
+                
                 if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
                     attachment_parts.append(f"[Image: {attachment.filename} - current AI model doesn't support images]")
                 else:
-                    attachment_parts.append(f"[File: {attachment.filename}]")
+                    file_size_mb = attachment.size / (1024 * 1024)
+                    attachment_parts.append(f"[File: {attachment.filename} ({file_size_mb:.1f}MB)]")
             
             if attachment_parts:
                 message_content = formatted_content + " " + " ".join(attachment_parts)
@@ -2708,6 +2842,33 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             temperature = get_temperature(guild_id)
 
         # Generate response using AI Provider Manager
+        # Check message size before sending to prevent 413 errors
+        estimated_size = estimate_message_size(history, system_prompt)
+        max_safe_size = 800000  # ~800K characters, well below most API limits
+        
+        if estimated_size > max_safe_size:
+            print(f"Message too large ({estimated_size} chars), trimming history...")
+            # Keep only the most recent messages and current message
+            while len(history) > 2 and estimated_size > max_safe_size:
+                # Remove oldest message (but keep at least the current user message)
+                if len(history) > 2:
+                    removed_message = history.pop(0)
+                    estimated_size = estimate_message_size(history, system_prompt)
+                    print(f"Removed message, new size: {estimated_size} chars")
+                else:
+                    break
+            
+            # If still too large, truncate the current message content
+            if estimated_size > max_safe_size and history:
+                last_message = history[-1]
+                if isinstance(last_message.get("content"), str):
+                    original_length = len(last_message["content"])
+                    # Truncate to fit within limit
+                    max_content_length = max_safe_size - (estimated_size - original_length) - 1000  # Leave some buffer
+                    if max_content_length > 0:
+                        last_message["content"] = last_message["content"][:max_content_length] + " [Message truncated due to size limit]"
+                        print(f"Truncated message content from {original_length} to {max_content_length} chars")
+
         bot_response = await ai_manager.generate_response(
             messages=history,
             system_prompt=system_prompt,
@@ -2921,6 +3082,12 @@ async def process_voice_message(attachment: discord.Attachment) -> str:
     try:
         # Check if it's an audio file
         if not any(attachment.filename.lower().endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.m4a', '.webm']):
+            return None
+        
+        # Check file size (limit to 25MB for voice messages)
+        max_voice_size = 25 * 1024 * 1024  # 25MB
+        if attachment.size > max_voice_size:
+            print(f"Voice message {attachment.filename} too large ({attachment.size / (1024*1024):.1f}MB, max: 25MB)")
             return None
         
         # Download the audio file
