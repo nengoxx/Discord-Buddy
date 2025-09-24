@@ -2739,7 +2739,7 @@ def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = N
         nsfw_enabled = guild_nsfw_settings.get(guild_id, False)
     
     # Base prompt structure
-    system_prompt = """You will be acting as a real person named {bot_persona_name}. Your goal is to chat with users on Discord. You will be replying to the users {location_text}, and they will be confused if you don't respond in character.
+    system_prompt = """You will be acting as a real person named {bot_persona_name}. Your goal is to autonomously chat with users on Discord. You will be replying to the users {location_text}, and they will be confused if you don't respond in character.
 
 Maintain a natural, informal, and conversational tone.
 
@@ -2974,11 +2974,11 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                 format_style = server_style if server_style else "conversational"
         
         if format_style == "conversational":
-            format_instructions = "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. No asterisks or em-dashes. Do not repeat after yourself or others."
+            format_instructions = "In your response, adapt the internet language. Never use asterisks or em-dashes. Do not repeat after yourself or others. You're free to reply with just one word or emoji. Keep your response's length up to one sentence long."
         elif format_style == "asterisk":
-            format_instructions = "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. No em-dashes or nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative."
+            format_instructions = "In your response, write asterisk roleplay. Enclose actions and descriptions in *asterisks*, keeping dialogues as plain text. Never use em-dashes or nested asterisks. Do not repeat after yourself or others. Be creative. Keep your response's length between one to three short paragraphs long."
         elif format_style == "narrative":
-            format_instructions = "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. No em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
+            format_instructions = "In your response, write narrative roleplay. Apply plain text for narration and \"quotation marks\" for dialogues. Never use em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell. Keep your response's length between one to three paragraphs long."
 
         # Append the system messages to complete the structure
         history.append({"role": "system", "content": """</history>
@@ -2994,18 +2994,33 @@ How do you respond in the chat?
 
 Think about it first.
 
-If you choose to use a server emoji in your response, follow the exact format of :emoji: or they won't work! Don't spam them.
-You may also react to the users' messages. To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] (for standard emojis) or [REACT: :custom_emoji:] (for custom emojis). You don't have to react every time.
-You can also mention a specific user by including <@user_id> in your message, but only do so if they are not currently participating in the conversation, and you want to grab their attention. Otherwise, you don't need to state any names; everyone can deduce to whom you're talking from context alone.
+If you choose to use server emojis in your response, follow the exact format of :emoji: or they won't work! Don't spam them.
+You may react to the users' messages. To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] (for standard emojis) or [REACT: :custom_emoji:] (for custom emojis). You don't have to react every time.
+You can mention a specific user by including <@user_id> in your response, but only do so if they are not currently participating in the conversation, and you want to grab their attention. Otherwise, you don't need to state any names; everyone can deduce to whom you're talking from context alone.
 
 {format_instructions}"""})
 
         # ========== DEBUG LOGGING ==========
+        # Get current provider and model settings for logging
+        debug_provider = "unknown"
+        debug_model = "unknown"
+        try:
+            if is_dm and user_id:
+                selected_guild_id = dm_server_selection.get(user_id)
+                if selected_guild_id:
+                    debug_provider, debug_model = ai_manager.get_guild_settings(selected_guild_id)
+                elif guild_id:
+                    debug_provider, debug_model = ai_manager.get_guild_settings(guild_id)
+            elif guild_id:
+                debug_provider, debug_model = ai_manager.get_guild_settings(guild_id)
+        except Exception as e:
+            print(f"Debug logging error: {e}")
+        
         print("\n" + "="*80)
         print("🤖 AI REQUEST DEBUG LOG")
         print("="*80)
-        print(f"📊 Model Provider: {ai_manager.current_provider}")
-        print(f"🎯 Model: {ai_manager.current_model}")
+        print(f"📊 Model Provider: {debug_provider}")
+        print(f"🎯 Model: {debug_model}")
         print(f"🌡️  Temperature: {temperature}")
         print(f"📍 Guild ID: {guild_id}")
         print(f"💬 Channel ID: {channel_id}")
@@ -4709,9 +4724,9 @@ async def view_format_instructions(interaction: discord.Interaction, format_type
     
     # Get current hardcoded format instructions
     format_instructions = {
-        "conversational": "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. Avoid asterisks and em-dashes. Do not repeat after yourself or others.",
-        "asterisk": "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. Avoid em-dashes and nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative.",
-        "narrative": "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. Avoid em-dashes and asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
+        "conversational": "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. Avoid usingasterisks and em-dashes. Do not repeat after yourself or others.",
+        "asterisk": "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. Avoid using em-dashes and nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative.",
+        "narrative": "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. Avoid using em-dashes and asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
     }
     
     embed = discord.Embed(
