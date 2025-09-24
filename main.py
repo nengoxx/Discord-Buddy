@@ -2864,6 +2864,7 @@ def split_message_by_newlines(message: str) -> List[str]:
 
 async def generate_response(channel_id: int, user_message: str, guild: discord.Guild = None, attachments: List[discord.Attachment] = None, user_name: str = None, is_dm: bool = False, user_id: int = None, original_message: discord.Message = None) -> str:
     """Generate response using the AI Provider Manager"""
+    print(f"🔍 DEBUG: generate_response called with channel_id={channel_id}, is_dm={is_dm}, user_id={user_id}")
     try:
         guild_id = guild.id if guild else None
 
@@ -2986,7 +2987,7 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
 Here is the last message in the conversation:
 <message>"""})
         
-        history.append({"role": "system", "content": last_user_message})
+        history.append({"role": "user", "content": last_user_message})
         
         history.append({"role": "system", "content": f"""</message>
 
@@ -3000,6 +3001,7 @@ You can mention a specific user by including <@user_id> in your response, but on
 
 {format_instructions}"""})
 
+        print(f"🔍 DEBUG: About to print main debug logging...")
         # ========== DEBUG LOGGING ==========
         # Get current provider and model settings for logging
         debug_provider = "unknown"
