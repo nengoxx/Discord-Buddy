@@ -3002,6 +3002,7 @@ You can mention a specific user by including <@user_id> in your response, but on
 {format_instructions}"""})
 
         print(f"🔍 DEBUG: About to print main debug logging...")
+        print("🔍 DEBUG: ENTERING DEBUG LOGGING SECTION")
         print("🔍 DEBUG: Starting debug logging section...")
         # ========== DEBUG LOGGING ==========
         # Get current provider and model settings for logging
@@ -3051,6 +3052,7 @@ You can mention a specific user by including <@user_id> in your response, but on
         print(format_instructions)
         print("="*80)
         # ========== END DEBUG LOGGING ==========
+        print("🔍 DEBUG: EXITED DEBUG LOGGING SECTION")
         print("🔍 DEBUG: Debug logging section completed, about to call ai_manager...")
 
         bot_response = await ai_manager.generate_response(
