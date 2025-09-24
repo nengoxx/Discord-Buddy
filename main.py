@@ -735,6 +735,22 @@ class AIProviderManager:
             # No guild context and no provider
             return "❌ No AI provider is configured. Please contact the bot administrator to set up API keys."
         
+        # ========== PROVIDER DEBUG LOGGING ==========
+        print(f"\n🔌 PROVIDER MANAGER DEBUG:")
+        print(f"   Provider: {provider_name}")
+        print(f"   Model: {model_name}")
+        print(f"   Max Tokens: {max_tokens}")
+        print(f"   Messages to send: {len(messages)}")
+        
+        # Log the exact payload being sent to provider
+        if provider_name == "custom":
+            url_guild_id = dm_server_selection.get(user_id) if is_dm and user_id in dm_server_selection else guild_id
+            custom_url = self.get_guild_custom_url(url_guild_id) if url_guild_id else "http://localhost:1234/v1"
+            print(f"   Custom URL: {custom_url}")
+        
+        print("   📦 Sending to AI provider...")
+        # ========== END PROVIDER DEBUG LOGGING ==========
+
         # Handle custom provider with cached instances
         if provider_name == "custom":
             # For DMs, use the selected server's custom URL, otherwise use current guild
@@ -2984,6 +3000,40 @@ You can also mention a specific user by including <@user_id> in your message, bu
 
 {format_instructions}"""})
 
+        # ========== DEBUG LOGGING ==========
+        print("\n" + "="*80)
+        print("🤖 AI REQUEST DEBUG LOG")
+        print("="*80)
+        print(f"📊 Model Provider: {ai_manager.current_provider}")
+        print(f"🎯 Model: {ai_manager.current_model}")
+        print(f"🌡️  Temperature: {temperature}")
+        print(f"📍 Guild ID: {guild_id}")
+        print(f"💬 Channel ID: {channel_id}")
+        print(f"👤 User ID: {user_id}")
+        print(f"🔒 Is DM: {is_dm}")
+        print(f"🎭 Format Style: {format_style}")
+        print(f"📏 Message History Length: {len(history)}")
+        print(f"📝 System Prompt Length: {len(system_prompt)} chars")
+        
+        print("\n🎯 SYSTEM PROMPT:")
+        print("-" * 40)
+        print(system_prompt)
+        
+        print("\n📜 MESSAGE HISTORY:")
+        print("-" * 40)
+        for i, msg in enumerate(history):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            # Truncate long content for readability
+            display_content = content if len(content) <= 200 else content[:200] + "...[TRUNCATED]"
+            print(f"[{i+1}] {role.upper()}: {display_content}")
+            
+        print("\n🔧 FORMAT INSTRUCTIONS:")
+        print("-" * 40)
+        print(format_instructions)
+        print("="*80)
+        # ========== END DEBUG LOGGING ==========
+
         bot_response = await ai_manager.generate_response(
             messages=history,
             system_prompt=system_prompt,
@@ -2992,6 +3042,18 @@ You can also mention a specific user by including <@user_id> in your message, bu
             guild_id=guild_id,
             is_dm=is_dm
         )
+
+        # ========== RESPONSE DEBUG LOGGING ==========
+        print("\n🤖 AI RESPONSE DEBUG LOG")
+        print("-" * 40)
+        if bot_response:
+            print(f"✅ Response received ({len(bot_response)} chars)")
+            display_response = bot_response if len(bot_response) <= 500 else bot_response[:500] + "...[TRUNCATED]"
+            print(f"📝 Response: {display_response}")
+        else:
+            print("❌ No response received (None)")
+        print("="*80)
+        # ========== END RESPONSE DEBUG LOGGING ==========
 
         # Check if the response is an error message
         if bot_response and bot_response.startswith("❌"):
@@ -3341,7 +3403,7 @@ async def send_welcome_dm(user: discord.User):
             name="✨ Getting Started",
             value="• **Mention me** (@bot) to start chatting\n"
                   "• **Use `/help`** to see all available commands\n"
-                  "• **Configure me** with `/model_set`, `/personality_set`, and `/prompt_set`\n"
+                  "• **Configure me** with `/model_set`, `/personality_set`, and `/format_set`\n"
                   "• **I work in DMs too!** Just message me directly anytime",
             inline=False
         )
@@ -3361,7 +3423,7 @@ async def send_welcome_dm(user: discord.User):
             name="⚙️ Quick Setup Commands",
             value="`/model_set` - Choose AI provider (Claude, Gemini, etc.)\n"
                   "`/personality_create` - Create custom bot personalities\n"
-                  "`/prompt_set` - Set conversation style per channel\n"
+                  "`/format_set` - Set conversation style with dropdown choices!\n"
                   "`/autonomous_set` - Enable autonomous responses in channels (free will)",
             inline=False
         )
@@ -4338,7 +4400,7 @@ async def help_command(interaction: discord.Interaction):
     
     embed.add_field(
         name="💬 Response Format Commands",
-        value="`/format_set <style> [scope]` - Set response format (conversational/asterisk/narrative)\n`/format_info` - Show current format and available options\n`/format_view [type]` - View format instruction templates\n`/format_edit <type> <instructions>` - Edit format templates (Admin only)\n`/nsfw_set <enabled> [scope]` - Enable/disable NSFW content\n`/nsfw_info` - Show current NSFW settings",
+        value="`/format_set <style> [scope]` - Set response format with dropdown choices! (conversational/asterisk/narrative)\n`/format_info` - Show current format and available options\n`/format_view [type]` - View format instruction templates\n`/format_edit <type> <instructions>` - Edit format templates (Admin only)\n`/nsfw_set <enabled> [scope]` - Enable/disable NSFW content\n`/nsfw_info` - Show current NSFW settings",
         inline=False
     )
     
@@ -4418,6 +4480,19 @@ async def help_command(interaction: discord.Interaction):
 # FORMAT COMMANDS
 
 @tree.command(name="format_set", description="Set conversation format style")
+@app_commands.describe(
+    style="Choose your format style",
+    scope="Where to apply this setting (only needed for servers, not DMs)"
+)
+@app_commands.choices(style=[
+    app_commands.Choice(name="Conversational - Normal Discord chat", value="conversational"),
+    app_commands.Choice(name="Asterisk - Roleplay with *actions*", value="asterisk"), 
+    app_commands.Choice(name="Narrative - Rich storytelling format", value="narrative")
+])
+@app_commands.choices(scope=[
+    app_commands.Choice(name="Channel - Apply to this channel only", value="channel"),
+    app_commands.Choice(name="Server - Apply as server default (Admin only)", value="server")
+])
 async def set_format_style(interaction: discord.Interaction, style: str, scope: str = None):
     """Set conversation format with automatic DM/server detection and scope options"""
     await interaction.response.defer(ephemeral=True)
@@ -4634,9 +4709,9 @@ async def view_format_instructions(interaction: discord.Interaction, format_type
     
     # Get current hardcoded format instructions
     format_instructions = {
-        "conversational": "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. No asterisks or em-dashes. Do not repeat after yourself or others.",
-        "asterisk": "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. No em-dashes or nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative.",
-        "narrative": "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. No em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
+        "conversational": "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. Avoid asterisks and em-dashes. Do not repeat after yourself or others.",
+        "asterisk": "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. Avoid em-dashes and nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative.",
+        "narrative": "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. Avoid em-dashes and asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
     }
     
     embed = discord.Embed(
@@ -4846,381 +4921,30 @@ async def nsfw_info(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 # PERSONALITY COMMANDS
-@tree.command(name="prompt_set", description="Set conversation style with automatic DM/server detection and scope options")
+@tree.command(name="prompt_set", description="[DEPRECATED] Use /format_set instead")
 @app_commands.describe(
     style="Choose your conversation style",
     scope="Server scope (channel/server) - only for servers, not DMs"
 )
-async def prompt_set(
+async def prompt_set_deprecated(
     interaction: discord.Interaction,
     style: str,
     scope: str = None
 ):
-    """Set conversation style with automatic DM/server detection and scope options"""
-    await interaction.response.defer(ephemeral=True)
-    
-    is_dm = isinstance(interaction.channel, discord.DMChannel)
-    style = style.lower()
-    
-    # Get valid styles (built-in + custom)
-    valid_styles = ["conversational", "asterisk", "narrative"]
-    
-    # Add custom prompts for this server
-    custom_prompts_list = []
-    if not is_dm and interaction.guild and interaction.guild.id in custom_prompts:
-        custom_prompts_list = list(custom_prompts[interaction.guild.id].keys())
-        valid_styles.extend(custom_prompts_list)
-    
-    # Check if style is valid
-    if style not in valid_styles:
-        available_list = ["conversational", "asterisk", "narrative"]
-        if custom_prompts_list:
-            available_list.extend([f"`{name}` (custom)" for name in custom_prompts_list])
-        
-        await interaction.followup.send(f"❌ **Invalid style!**\n\n"
-                                       f"**Available styles:** {', '.join(available_list)}\n"
-                                       f"**Usage:** `/prompt_set <style>` {'(DMs)' if is_dm else '[scope]'}")
-        return
-    
-    # Get style descriptions
-    style_descriptions = {
-        "conversational": "Normal Discord chat (no roleplay actions)",
-        "asterisk": "Roleplay with *action descriptions*",
-        "narrative": "Rich, story-driven narrative roleplay"
-    }
-    
-    # Get description for custom prompts
-    if style in custom_prompts_list:
-        custom_data = custom_prompts[interaction.guild.id][style]
-        style_description = f"Custom: {custom_data['name']}"
-        if custom_data.get("nsfw", False):
-            style_description += " 🔞"
-    else:
-        style_description = style_descriptions.get(style, "Custom conversation style")
-    
-    if is_dm:
-        # DM - simple style setting (scope not needed)
-        if scope is not None:
-            await interaction.followup.send(f"💡 **DM Mode**: You don't need to specify a scope in DMs.\n"
-                                        f"Setting your DM conversation style to **{style.title()}**...")
-        
-        # For DMs, check custom prompts from all shared servers
-        custom_prompt_found = None
-        shared_servers_with_prompt = []
-        
-        if style not in ["conversational", "asterisk", "narrative"]:
-            # Check all shared servers for this custom prompt
-            for guild in client.guilds:
-                # Check if user is in this guild
-                member = guild.get_member(interaction.user.id)
-                if not member:
-                    try:
-                        member = await guild.fetch_member(interaction.user.id)
-                    except (discord.NotFound, discord.Forbidden):
-                        continue
-                
-                if member and guild.id in custom_prompts and style in custom_prompts[guild.id]:
-                    custom_prompt_found = custom_prompts[guild.id][style]
-                    shared_servers_with_prompt.append(guild.name)
-            
-            if not custom_prompt_found:
-                # Get all available custom prompts from shared servers
-                available_custom_prompts = []
-                for guild in client.guilds:
-                    member = guild.get_member(interaction.user.id)
-                    if not member:
-                        try:
-                            member = await guild.fetch_member(interaction.user.id)
-                        except (discord.NotFound, discord.Forbidden):
-                            continue
-                    
-                    if member and guild.id in custom_prompts:
-                        for prompt_name, prompt_data in custom_prompts[guild.id].items():
-                            nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-                            available_custom_prompts.append(f"`{prompt_name}` from {guild.name}{nsfw_marker}")
-                
-                error_msg = f"❌ **Custom prompt '{style}' not found!**\n\n"
-                if available_custom_prompts:
-                    error_msg += f"**Available custom prompts from your shared servers:**\n" + "\n".join(available_custom_prompts[:10])
-                    if len(available_custom_prompts) > 10:
-                        error_msg += f"\n*...and {len(available_custom_prompts) - 10} more*"
-                else:
-                    error_msg += "No custom prompts found in your shared servers."
-                
-                error_msg += f"\n\n**Built-in styles:** conversational, asterisk, narrative"
-                
-                await interaction.followup.send(error_msg)
-                return
-        
-        dm_prompt_settings[interaction.user.id] = style
-        save_json_data(DM_PROMPT_SETTINGS_FILE, dm_prompt_settings)
-        
-        if custom_prompt_found:
-            # Show which servers have this prompt
-            servers_text = ", ".join(shared_servers_with_prompt)
-            nsfw_marker = " 🔞" if custom_prompt_found.get("nsfw", False) else ""
-            
-            await interaction.followup.send(f"✅ **Your DM conversation style set to {custom_prompt_found['name']}{nsfw_marker}!**\n"
-                                        f"**Custom Prompt:** `{style}` from {servers_text}\n"
-                                        f"**Description:** Custom conversation style\n\n"
-                                        f"💬 This setting applies to all your DMs with the bot.\n"
-                                        f"💡 The prompt uses `{{username}}` for personalization in DMs.")
-        else:
-            await interaction.followup.send(f"✅ **Your DM conversation style set to {style.title()}!**\n"
-                                        f"**Description:** {style_description}\n\n"
-                                        f"💬 This setting applies to all your DMs with the bot.")
-    else:
-        # Server - handle scope options
-        if scope is None:
-            # Show scope selection instead of executing
-            embed = discord.Embed(
-                title="🎭 Choose Prompt Scope",
-                description=f"You want to set the style to **{style.title()}**.\n**Please specify the scope:**",
-                color=0xffaa00  # Orange color to indicate action needed
-            )
-            
-            embed.add_field(
-                name="📢 For This Channel Only",
-                value=f"**Command:** `/prompt_set {style} channel`\n"
-                      f"**Effect:** Sets the style for **#{interaction.channel.name}** only",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="🏰 For Entire Server",
-                value=f"**Command:** `/prompt_set {style} server`\n"
-                      f"**Effect:** Sets the default style for **all channels** in this server\n"
-                      f"*(Requires admin permissions)*",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="📋 Style Description",
-                value=f"**{style.title()}:** {style_description}",
-                inline=False
-            )
-            
-            # Add custom prompt preview if it's a custom style
-            if style in custom_prompts_list:
-                custom_data = custom_prompts[interaction.guild.id][style]
-                preview = custom_data["prompt"][:200] + ("..." if len(custom_data["prompt"]) > 200 else "")
-                embed.add_field(
-                    name="📖 Custom Prompt Preview",
-                    value=preview,
-                    inline=False
-                )
-            
-            embed.set_footer(text="⚠️ Please run the command again with your chosen scope • Channel-specific settings override server defaults")
-            await interaction.followup.send(embed=embed)
-            return
-        
-        # Validate scope
-        scope = scope.lower()
-        if scope not in ["channel", "server"]:
-            await interaction.followup.send(f"❌ **Invalid scope!**\n\n"
-                                           f"**Valid scopes:** `channel` or `server`\n\n"
-                                           f"**Examples:**\n"
-                                           f"• `/prompt_set {style} channel` - Set for this channel only\n"
-                                           f"• `/prompt_set {style} server` - Set for entire server (Admin only)")
-            return
-        
-        if scope == "channel":
-            # Set for current channel
-            channel_prompt_settings[interaction.channel.id] = style
-            save_json_data(PROMPT_SETTINGS_FILE, channel_prompt_settings)
-            
-            success_msg = f"✅ **Conversation style set to {style.title()} for #{interaction.channel.name}!**\n" \
-                         f"**Description:** {style_description}\n\n" \
-                         f"💡 This overrides the server default for this channel."
-            
-            # Add custom prompt info if applicable
-            if style in custom_prompts_list:
-                custom_data = custom_prompts[interaction.guild.id][style]
-                success_msg += f"\n\n📝 **Custom Prompt:** {custom_data['name']}"
-                if custom_data.get("nsfw", False):
-                    success_msg += " 🔞"
-            
-            await interaction.followup.send(success_msg)
-        
-        elif scope == "server":
-            # Check admin permissions for server-wide changes
-            if not check_admin_permissions(interaction):
-                await interaction.followup.send(f"❌ **Administrator permissions required!**\n\n"
-                                               f"You need administrator permissions to set server-wide conversation styles.\n"
-                                               f"💡 You can still use `/prompt_set {style} channel` to set the style for this channel only.")
-                return
-            
-            # Set server default and save to persistent storage
-            server_format_defaults[interaction.guild.id] = style
-            save_json_data(SERVER_FORMAT_DEFAULTS_FILE, server_format_defaults)
-            
-            success_msg = f"✅ **Server default conversation style set to {style.title()}!**\n" \
-                         f"**Description:** {style_description}\n\n" \
-                         f"🏰 This applies to all channels without specific style settings.\n" \
-                         f"💡 Individual channels can still override this with `/prompt_set {style} channel`\n" \
-                         f"💾 This setting is saved and will persist between bot restarts!"
-            
-            # Add custom prompt info if applicable
-            if style in custom_prompts_list:
-                custom_data = custom_prompts[interaction.guild.id][style]
-                success_msg += f"\n\n📝 **Custom Prompt:** {custom_data['name']}"
-                if custom_data.get("nsfw", False):
-                    success_msg += " 🔞"
-                success_msg += f"\n🔗 **Prompt ID:** `{style}`"
-            
-            await interaction.followup.send(success_msg)
-
-# PERSONALITY COMMANDS
-    """Display current prompt style and available options with improved server/channel detection"""
-    await interaction.response.defer(ephemeral=True)
-    
-    is_dm = isinstance(interaction.channel, discord.DMChannel)
-    
-    if is_dm:
-        current_style = dm_prompt_settings.get(interaction.user.id, "conversational")
-        title_prefix = "🔒 DM"
-        
-        # Check if current style is a custom prompt
-        current_style_name = current_style
-        is_custom = False
-        custom_prompt_servers = []
-        custom_data = None  # Initialize this variable
-        
-        if current_style not in ["conversational", "asterisk", "narrative"]:
-            # Check shared servers for this custom prompt
-            for guild in client.guilds:
-                member = guild.get_member(interaction.user.id)
-                if not member:
-                    try:
-                        member = await guild.fetch_member(interaction.user.id)
-                    except (discord.NotFound, discord.Forbidden):
-                        continue
-                
-                if member and guild.id in custom_prompts and current_style in custom_prompts[guild.id]:
-                    custom_data = custom_prompts[guild.id][current_style]  # Store the data
-                    current_style_name = f"{custom_data['name']} (Custom)"
-                    if custom_data.get("nsfw", False):
-                        current_style_name += " 🔞"
-                    custom_prompt_servers.append(guild.name)
-                    is_custom = True
-                    break
-        
-        embed_description = f"Current style: **{current_style_name}**"
-    else:
-        # Check for channel-specific setting first
-        channel_style = channel_prompt_settings.get(interaction.channel.id)
-        
-        if channel_style:
-            current_style = channel_style
-            style_source = f"Channel-specific (#{interaction.channel.name})"
-        else:
-            # Check for persistent server default
-            server_style = server_format_defaults.get(interaction.guild.id)
-            
-            if server_style:
-                current_style = server_style
-                style_source = f"Server default ({interaction.guild.name}) - PERSISTENT"
-            else:
-                current_style = "conversational"
-                style_source = "Global default (not set)"
-        
-        title_prefix = "📢 Channel"
-        
-        # Check if current style is custom (for servers)
-        current_style_name = current_style
-        is_custom = False
-        custom_data = None
-        
-        if (interaction.guild and 
-            interaction.guild.id in custom_prompts and 
-            current_style in custom_prompts[interaction.guild.id]):
-            
-            custom_data = custom_prompts[interaction.guild.id][current_style]
-            current_style_name = f"{custom_data['name']} (Custom)"
-            if custom_data.get("nsfw", False):
-                current_style_name += " 🔞"
-            is_custom = True
-        
-        embed_description = f"Current style: **{current_style_name}**\nSource: {style_source}"
-    
-    embed = discord.Embed(
-        title=f"🎭 {title_prefix} Conversation Styles",
-        description=embed_description,
-        color=0x00ff00
+    """DISABLED: Redirect users to format_set command"""
+    await interaction.response.send_message(
+        "❌ **The `/prompt_set` command has been replaced!**\n\n"
+        "✅ **Use `/format_set` instead** for setting conversation styles.\n\n"
+        "**Available styles:**\n"
+        "• `conversational` - Normal Discord chat\n"
+        "• `asterisk` - Roleplay with *actions*\n" 
+        "• `narrative` - Rich storytelling format\n\n"
+        "**Usage examples:**\n"
+        "• `/format_set conversational` (in DMs)\n"
+        "• `/format_set asterisk channel` (channel only)\n"
+        "• `/format_set narrative server` (server default, admin only)",
+        ephemeral=True
     )
-    
-    # Built-in styles
-    embed.add_field(
-        name="📝 Built-in Styles",
-        value="**Conversational** - Normal Discord chat\n"
-              "**Asterisk** - Roleplay with *actions*\n"
-              "**Narrative** - Rich storytelling\n"
-              "*(Use /nsfw_set to enable adult content)*",
-        inline=False
-    )
-    
-    # Custom styles (server only)
-    if not is_dm and interaction.guild and interaction.guild.id in custom_prompts:
-        custom_list = []
-        for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
-            nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-            custom_list.append(f"**`{prompt_name}`** - {prompt_data['name']}{nsfw_marker}")
-        
-        if custom_list:
-            embed.add_field(
-                name="🛠️ Custom Server Prompts",
-                value="\n".join(custom_list[:5]) + ("\n*...and more*" if len(custom_list) > 5 else ""),
-                inline=False
-            )
-    
-    # Show available custom prompts from shared servers in DMs
-    if is_dm:
-        available_custom = []
-        seen_prompts = set()
-        
-        for guild in client.guilds:
-            member = guild.get_member(interaction.user.id)
-            if not member:
-                try:
-                    member = await guild.fetch_member(interaction.user.id)
-                except (discord.NotFound, discord.Forbidden):
-                    continue
-            
-            if member and guild.id in custom_prompts:
-                for prompt_name, prompt_data in custom_prompts[guild.id].items():
-                    if prompt_name not in seen_prompts:
-                        nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-                        available_custom.append(f"**`{prompt_name}`** - {prompt_data['name']}{nsfw_marker} (from {guild.name})")
-                        seen_prompts.add(prompt_name)
-        
-        if available_custom:
-            embed.add_field(
-                name="🛠️ Available Custom Prompts",
-                value="\n".join(available_custom[:5]) + ("\n*...and more*" if len(available_custom) > 5 else ""),
-                inline=False
-            )
-    
-    # Show preview of current custom prompt (works for both DM and server)
-    if is_custom and custom_data:
-        if is_dm and custom_prompt_servers:
-            field_name = f"📖 Current Custom Prompt (from {', '.join(custom_prompt_servers)})"
-        else:
-            field_name = "📖 Current Custom Prompt Preview"
-        
-        preview = custom_data["prompt"][:200] + ("..." if len(custom_data["prompt"]) > 200 else "")
-        embed.add_field(
-            name=field_name,
-            value=preview,
-            inline=False
-        )
-    
-    # Add footer
-    if is_dm:
-        embed.set_footer(text="Use /prompt_set <style> to change your DM conversation style!")
-    else:
-        embed.set_footer(text="Use /prompt_set <style> <scope> • /prompt_list_custom for custom prompts • /prompt_create to make new (Admin)")
-    
-    await interaction.followup.send(embed=embed)
 
 # PERSONALITY COMMANDS
 
