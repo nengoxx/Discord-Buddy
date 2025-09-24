@@ -736,19 +736,19 @@ class AIProviderManager:
             return "❌ No AI provider is configured. Please contact the bot administrator to set up API keys."
         
         # ========== PROVIDER DEBUG LOGGING ==========
-        print(f"\n🔌 PROVIDER MANAGER DEBUG:")
-        print(f"   Provider: {provider_name}")
-        print(f"   Model: {model_name}")
-        print(f"   Max Tokens: {max_tokens}")
-        print(f"   Messages to send: {len(messages)}")
+        print(f"\n🔌 PROVIDER MANAGER DEBUG:", flush=True)
+        print(f"   Provider: {provider_name}", flush=True)
+        print(f"   Model: {model_name}", flush=True)
+        print(f"   Max Tokens: {max_tokens}", flush=True)
+        print(f"   Messages to send: {len(messages)}", flush=True)
         
         # Log the exact payload being sent to provider
         if provider_name == "custom":
             url_guild_id = dm_server_selection.get(user_id) if is_dm and user_id in dm_server_selection else guild_id
             custom_url = self.get_guild_custom_url(url_guild_id) if url_guild_id else "http://localhost:1234/v1"
-            print(f"   Custom URL: {custom_url}")
+            print(f"   Custom URL: {custom_url}", flush=True)
         
-        print("   📦 Sending to AI provider...")
+        print("   📦 Sending to AI provider...", flush=True)
         # ========== END PROVIDER DEBUG LOGGING ==========
 
         # Handle custom provider with cached instances
@@ -1418,27 +1418,16 @@ class RequestQueue:
                         user_name=None
                     )
                 
-                # Get updated history for generation
-                history = get_conversation_history(channel_id)
-
-                system_prompt = get_system_prompt(guild.id if guild else None, guild, content, channel_id, is_dm, user_id, user_name, history)
-
-                temperature = 1.0
-                if is_dm and user_id:
-                    selected_guild_id = dm_server_selection.get(user_id)
-                    temp_guild_id = selected_guild_id if selected_guild_id else (guild.id if guild else None)
-                    if temp_guild_id:
-                        temperature = get_temperature(temp_guild_id)
-                elif guild:
-                    temperature = get_temperature(guild.id)
-
-                bot_response = await ai_manager.generate_response(
-                    messages=history,
-                    system_prompt=system_prompt,
-                    temperature=temperature,
+                # Generate response using the main generate_response function (includes debug logging)
+                bot_response = await generate_response(
+                    channel_id=channel_id,
+                    user_message=content,
+                    guild=guild,
+                    attachments=attachments,
+                    user_name=user_name,
+                    is_dm=is_dm,
                     user_id=user_id,
-                    guild_id=guild.id if guild else None,
-                    is_dm=is_dm
+                    original_message=message
                 )
 
                 if bot_response and bot_response.startswith("❌"):
@@ -2864,7 +2853,7 @@ def split_message_by_newlines(message: str) -> List[str]:
 
 async def generate_response(channel_id: int, user_message: str, guild: discord.Guild = None, attachments: List[discord.Attachment] = None, user_name: str = None, is_dm: bool = False, user_id: int = None, original_message: discord.Message = None) -> str:
     """Generate response using the AI Provider Manager"""
-    print(f"🔍 DEBUG: generate_response called with channel_id={channel_id}, is_dm={is_dm}, user_id={user_id}")
+    print(f"🔍 DEBUG: generate_response called with channel_id={channel_id}, is_dm={is_dm}, user_id={user_id}", flush=True)
     try:
         guild_id = guild.id if guild else None
 
@@ -3001,9 +2990,9 @@ You can mention a specific user by including <@user_id> in your response, but on
 
 {format_instructions}"""})
 
-        print(f"🔍 DEBUG: About to print main debug logging...")
-        print("🔍 DEBUG: ENTERING DEBUG LOGGING SECTION")
-        print("🔍 DEBUG: Starting debug logging section...")
+        print(f"🔍 DEBUG: About to print main debug logging...", flush=True)
+        print("🔍 DEBUG: ENTERING DEBUG LOGGING SECTION", flush=True)
+        print("🔍 DEBUG: Starting debug logging section...", flush=True)
         # ========== DEBUG LOGGING ==========
         # Get current provider and model settings for logging
         debug_provider = "unknown"
@@ -3052,8 +3041,8 @@ You can mention a specific user by including <@user_id> in your response, but on
         print(format_instructions)
         print("="*80)
         # ========== END DEBUG LOGGING ==========
-        print("🔍 DEBUG: EXITED DEBUG LOGGING SECTION")
-        print("🔍 DEBUG: Debug logging section completed, about to call ai_manager...")
+        print("🔍 DEBUG: EXITED DEBUG LOGGING SECTION", flush=True)
+        print("🔍 DEBUG: Debug logging section completed, about to call ai_manager...", flush=True)
 
         bot_response = await ai_manager.generate_response(
             messages=history,
