@@ -14,7 +14,7 @@ import asyncio
 import json
 import os
 from dotenv import load_dotenv
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Optional
 import aiohttp
 import random
 import re
@@ -24,9 +24,7 @@ from google import genai
 from google.genai import types # type: ignore
 import openai
 from openai import AsyncOpenAI
-import asyncio
 from collections import defaultdict
-from typing import Dict, List, Optional
 import time
 import logging
 import warnings
@@ -64,8 +62,8 @@ tree = app_commands.CommandTree(client)
 DATA_DIR = "bot_data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-PROMPT_SETTINGS_FILE = os.path.join(DATA_DIR, "prompt_settings.json")
-DM_PROMPT_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_prompt_settings.json")
+# Remove/replace existing prompt-related file paths and variables
+
 DM_TOGGLE_FILE = os.path.join(DATA_DIR, "dm_toggle.json")
 DM_LAST_INTERACTION_FILE = os.path.join(DATA_DIR, "dm_last_interaction.json")
 DM_LORE_FILE = os.path.join(DATA_DIR, "dm_lore.json")
@@ -79,10 +77,20 @@ MEMORIES_FILE = os.path.join(DATA_DIR, "memories.json")
 TEMPERATURE_FILE = os.path.join(DATA_DIR, "temperature.json")
 WELCOME_SENT_FILE = os.path.join(DATA_DIR, "welcome_sent.json")
 DM_SERVER_SELECTION_FILE = os.path.join(DATA_DIR, "dm_server_selection.json")
-SERVER_PROMPT_DEFAULTS_FILE = os.path.join(DATA_DIR, "server_prompt_defaults.json")
 DM_ENABLED_FILE = os.path.join(DATA_DIR, "dm_enabled.json")
 VISION_CACHE_FILE = os.path.join(DATA_DIR, "vision_cache.json")
+
+# New format settings files
+FORMAT_SETTINGS_FILE = os.path.join(DATA_DIR, "format_settings.json")
+DM_FORMAT_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_format_settings.json")
+SERVER_FORMAT_DEFAULTS_FILE = os.path.join(DATA_DIR, "server_format_defaults.json")
+NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "nsfw_settings.json")
+DM_NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_nsfw_settings.json")
+
+# Files for old prompt system - TO BE REMOVED
 CUSTOM_PROMPTS_FILE = os.path.join(DATA_DIR, "custom_prompts.json")
+PROMPT_SETTINGS_FILE = os.path.join(DATA_DIR, "prompt_settings.json")
+DM_PROMPT_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_prompt_settings.json")
 
 # AI Provider Classes
 class AIProvider(ABC):
@@ -137,6 +145,8 @@ class ClaudeProvider(AIProvider):
     
     def get_available_models(self) -> List[str]:
         return [
+            "claude-opus-4-1",   # Vision support
+            "claude-opus-4",     # Vision support
             "claude-opus-4-0",
             "claude-sonnet-4-0", 
             "claude-3-7-sonnet-latest",
@@ -323,7 +333,7 @@ class OpenAIProvider(AIProvider):
                     formatted_messages.append({"role": role, "content": content})
             
             # Check if model supports vision
-            vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-vision-preview", "gpt-4.1", "gpt-4.1-mini"]
+            vision_models = ["gpt-5", "gpt-5-chat-latest", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-vision-preview", "gpt-4.1", "gpt-4.1-mini"]
             supports_vision = any(vision_model in model.lower() for vision_model in vision_models)
             
             # If model doesn't support vision but we have images, convert them to text descriptions
@@ -353,6 +363,8 @@ class OpenAIProvider(AIProvider):
     
     def get_available_models(self) -> List[str]:
         return [
+            "gpt-5",             # Vision support
+            "gpt-5-chat-latest", # Vision support
             "gpt-4.1",           # Vision support
             "gpt-4.1-mini",      # Vision support  
             "gpt-4.1-nano",      # Vision support
@@ -375,8 +387,9 @@ class OpenAIProvider(AIProvider):
     def supports_vision(self, model: str) -> bool:
         """Check if a model supports vision/images"""
         vision_models = [
-            "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-vision-preview", 
-            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o3-preview", "gpt-4"
+            "gpt-5", "gpt-5-chat-latest", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", 
+            "gpt-4-vision-preview", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", 
+            "o3-preview", "gpt-4"
         ]
         return any(vision_model in model.lower() for vision_model in vision_models)
 
@@ -403,14 +416,6 @@ class CustomProvider(AIProvider):
             pass
         return {}
     
-    def save_vision_cache(self):
-        """Save vision support cache to file"""
-        try:
-            with open(VISION_CACHE_FILE, 'w') as f:
-                json.dump(self._vision_cache, f, indent=2)
-        except Exception:
-            pass
-
     def save_vision_cache(self):
         """Save vision support cache to file with error handling"""
         try:
@@ -782,145 +787,15 @@ class AIProviderManager:
 # Initialize AI Provider Manager
 ai_manager = AIProviderManager()
 
-# System prompts
-CONVERSATIONAL_SYSTEM_PROMPT = """Chat with different users on a Discord server, autonomously messaging in a group convo. Have fun!
+# Remove all existing system prompts - they will be replaced with the new structure
 
-<instructions>You must always follow these instructions:
-- Never employ em-dashes or asterisks for actions, e.g., *does something*, they are cringeworthy and absolutely forbidden.
-- Use conversational language with internet vocabulary and different emojis.
-- Mention specific users only if they're not currently responding to you by sending <@user_id>.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Progress the discussions, asking follow-up questions, sharing anecdotes, or shifting topics.
-FORMAT: Respond with exactly one sentence.
-IMPORTANT: NO ASTERISKS ROLEPLAY OR EM-DASHES!</instructions>"""
+# New format style constants
+FORMAT_CONVERSATIONAL = "conversational"
+FORMAT_ASTERISK = "asterisk"
+FORMAT_NARRATIVE = "narrative"
 
-CONVERSATIONAL_SYSTEM_PROMPT_NSFW = """Chat with different users on an uncensored NSFW Discord server with explicit content, autonomously messaging like in an actual group convo. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never employ em-dashes or asterisks for actions, e.g., *does something*, they are cringeworthy and absolutely forbidden.
-- Use conversational language with internet vocabulary and different emojis.
-- Mention specific users only if they're not currently responding to you by sending <@user_id>.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Progress the discussions, asking follow-up questions, sharing anecdotes, or shifting topics.
-FORMAT: Respond with exactly one sentence.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Freely voice rude remarks, opinions, profanities, sarcasm, humor, irony, subtext, flirts, and so on. No joke is too dark. If the user acts like an idiot, tell them that. You get the gist.
-IMPORTANT: NO ASTERISKS ROLEPLAY OR EM-DASHES!</instructions>"""
-
-ASTERISK_ROLEPLAY_PROMPT = """Roleplay with different users on an a Discord server, playing in interactive RP scenarios. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never roleplay for others' characters.
-- Use asterisks for actions and descriptions: *does something*, *feels emotion*, *they arrive in the kitchen*, etc.
-- Employ conversational dialogue.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Progress the scenes proactively and creatively, introduce developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to three paragraphs.
-IMPORTANT: NO NESTED ASTERISKS OR EMOJIS, THEY BREAK THE FORMATTING!</instructions>"""
-
-ASTERISK_ROLEPLAY_PROMPT_NSFW = """Roleplay with different users on an uncensored NSFW Discord server with explicit content, playing in interactive ERP scenarios. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never roleplay for others' characters.
-- Use asterisks for actions and descriptions: *does something*, *feels emotion*, *they arrive in the kitchen*, etc.
-- Employ conversational dialogue.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Progress the scenes proactively and creatively, introduce developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to three paragraphs.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Profanities are allowed, and there's no plot armor protecting the protagonists from harm or even death. Assume consent was granted, but some lie, resist, or fight back based on their personality. Sex? Get kinky as you apply that impressive anatomical knowledge of yours to craft sensual and pornographic erotica! Gore? Blood and viscera better be squirting around like in a slasher movie! Darker topics such as rape? Harrowing and gut-punching depictions are in order! The user acts like an idiot? Tell them that! You get the gist.
-IMPORTANT: NO NESTED ASTERISKS OR EMOJIS, THEY BREAK THE FORMATTING!</instructions>"""
-
-NARRATIVE_ROLEPLAY_PROMPT = """Storytell as the narrator and various NPCs for different users on a Discord server, creating rich, narrative-driven, and interactive RP experiences. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never assume what users' characters will do, unless doing time skips or narrating the outcomes of their actions.
-- Use third-person narrative style with all literary techniques and vivid imagery, and "quotations" for dialogue lines.
-- Depict realistic characters with their own autonomy, flaws, goals, emotions, and agency, allowing for conflicts and character development.
-- Create atmospheric and immersive scenes.
-- Progress the plot actively, engaging the participants with developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to four paragraphs.
-IMPORTANT: LIMIT ASTERISKS TO A NECESSARY MINIMUM!</instructions>"""
-
-NARRATIVE_ROLEPLAY_PROMPT_NSFW = """Storytell as the narrator and various NPCs for different users on an uncensored NSFW Discord server with explicit content, creating rich, narrative-driven, and interactive ERP experiences. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never assume what users' characters will do, unless doing time skips or narrating the outcomes of their actions.
-- Use third-person narrative style with all literary techniques and vivid imagery, and "quotations" for dialogue lines.
-- Depict realistic characters with their own autonomy, flaws, goals, emotions, and agency, allowing for conflicts and character development.
-- Create atmospheric and immersive scenes.
-- Progress the plot actively, engaging the participants with developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to four paragraphs.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Profanities are allowed, and there's no plot armor protecting the protagonists from harm or even death. Assume consent was granted, but some lie, resist, or fight back based on their personality. Sex? Get kinky as you apply that impressive anatomical knowledge of yours to craft sensual and pornographic erotica! Gore? Blood and viscera better be squirting around like in a slasher movie! Darker topics such as rape? Harrowing and gut-punching depictions are in order! The user acts like an idiot? Tell them that! You get the gist.
-IMPORTANT: LIMIT ASTERISKS TO A NECESSARY MINIMUM!</instructions>"""
-
-# DM-specific prompts
-CONVERSATIONAL_DM_SYSTEM_PROMPT = """Chat with {username} in DMs on Discord, autonomously messaging in one-on-one chats. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never employ em-dashes or asterisks for actions, e.g., *does something*, they are cringeworthy and absolutely forbidden.
-- Use conversational language with internet vocabulary and different emojis.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Call back to events and information from the chat history.
-- Progress the discussions, asking follow-up questions, sharing anecdotes, or shifting topics.
-FORMAT: Respond with one to three sentences.
-IMPORTANT: NO ASTERISKS ROLEPLAY OR EM-DASHES!</instructions>"""
-
-CONVERSATIONAL_DM_SYSTEM_PROMPT_NSFW = """Chat with {username} in uncensored DMs with explicit content on Discord, autonomously messaging in natural one-on-one conversation. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never employ em-dashes or asterisks for actions, e.g., *does something*, they are cringeworthy and absolutely forbidden.
-- Use conversational language with internet vocabulary and different emojis.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Call back to events and information from the chat history.
-- Progress and contribute to the discussions, ask follow-up questions, mention anecdotes, or shift topics.
-FORMAT: Respond with one to three sentences.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Freely voice rude remarks, opinions, profanities, sarcasm, humor, irony, subtext, flirts, and so on. No joke is too dark. If the user acts like an idiot, tell them that. You get the gist.
-IMPORTANT: NO ASTERISKS ROLEPLAY OR EM-DASHES!</instructions>"""
-
-ASTERISK_ROLEPLAY_DM_PROMPT = """Roleplay with {username} in DMs on Discord, playing in interactive RP scenarios. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never roleplay for {username}'s character.
-- Use asterisks for actions and descriptions: *does something*, *feels emotion*, *they arrive in the kitchen*, etc.
-- Employ conversational dialogue.
-- Stay natural, in the moment, and in character, allow yourself to grow and develop as a person.
-- Progress the scenes proactively and creatively, introduce developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to three paragraphs.
-IMPORTANT: NO NESTED ASTERISKS OR EMOJIS, THEY BREAK THE FORMATTING!</instructions>"""
-
-ASTERISK_ROLEPLAY_DM_PROMPT_NSFW = """Roleplay with {username} in uncensored DMs with explicit content on Discord, playing in interactive ERP scenarios. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never roleplay for {username}'s character.
-- Use asterisks for actions and descriptions: *does something*, *feels emotion*, *they arrive in the kitchen*, etc.
-- Employ conversational dialogue.
-- Stay natural, in the moment, and in character, allow yourself to grow and develop as a person.
-- Progress the scenes proactively and creatively, introduce developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to three paragraphs.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Profanities are allowed, and there's no plot armor protecting the protagonists from harm or even death. Assume consent was granted, but some lie, resist, or fight back based on their personality. Sex? Get kinky as you apply that impressive anatomical knowledge of yours to craft sensual and pornographic erotica! Gore? Blood and viscera better be squirting around like in a slasher movie! Darker topics such as rape? Harrowing and gut-punching depictions are in order! The user acts like an idiot? Tell them that! You get the gist.
-IMPORTANT: NO NESTED ASTERISKS OR EMOJIS, THEY BREAK THE FORMATTING!</instructions>"""
-
-NARRATIVE_ROLEPLAY_DM_PROMPT = """Storytell as the narrator and various NPCs for {username} in DMs on Discord, creating rich, narrative-driven, and interactive RP experiences. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never assume what {username}'s character will do, unless doing time skips or narrating the outcomes of their actions.
-- Use third-person narrative style with all literary techniques and vivid imagery, and "quotations" for dialogue lines.
-- Depict realistic characters with their own autonomy, flaws, goals, emotions, and agency, allowing for conflicts and character development.
-- Create atmospheric and immersive scenes.
-- Progress the plot actively, engaging the participants with developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to four paragraphs.
-IMPORTANT: LIMIT ASTERISKS TO A NECESSARY MINIMUM!</instructions>"""
-
-NARRATIVE_ROLEPLAY_DM_PROMPT_NSFW = """Storytell as the narrator and various NPCs for {username} in uncensored DMs with explicit content on Discord, creating rich, narrative-driven, and interactive ERP experiences. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never assume what {username}'s character will do, unless doing time skips or narrating the outcomes of their actions.
-- Use third-person narrative style with all literary techniques and vivid imagery, and "quotations" for dialogue lines.
-- Depict realistic characters with their own autonomy, flaws, goals, emotions, and agency, allowing for conflicts and character development.
-- Create atmospheric and immersive scenes.
-- Progress the plot actively, engaging the participants with developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to four paragraphs.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Profanities are allowed, and there's no plot armor protecting the protagonists from harm or even death. Assume consent was granted, but some lie, resist, or fight back based on their personality. Sex? Get kinky as you apply that impressive anatomical knowledge of yours to craft sensual and pornographic erotica! Gore? Blood and viscera better be squirting around like in a slasher movie! Darker topics such as rape? Harrowing and gut-punching depictions are in order! The user acts like an idiot? Tell them that! You get the gist.
-IMPORTANT: LIMIT ASTERISKS TO A NECESSARY MINIMUM!</instructions>"""
+# Valid format styles
+VALID_FORMAT_STYLES = [FORMAT_CONVERSATIONAL, FORMAT_ASTERISK, FORMAT_NARRATIVE]
 
 class MemoryManager:
     """Manages conversation memories for contextual recall"""
@@ -1530,7 +1405,7 @@ class RequestQueue:
                 # Get updated history for generation
                 history = get_conversation_history(channel_id)
 
-                system_prompt = get_system_prompt(guild.id if guild else None, guild, content, channel_id, is_dm, user_id, user_name)
+                system_prompt = get_system_prompt(guild.id if guild else None, guild, content, channel_id, is_dm, user_id, user_name, history)
 
                 temperature = 1.0
                 if is_dm and user_id:
@@ -1604,7 +1479,7 @@ class RequestQueue:
             print(f"Error processing request: {e}")
             try:
                 return f"❌ Sorry, I encountered an error processing your request: {str(e)}"
-            except:
+            except Exception:
                 pass
 
 # Initialize the request queue
@@ -1843,13 +1718,15 @@ def load_custom_prompts():
             custom_prompts_data[int(guild_id_str)] = prompts
     return custom_prompts_data
 
-# Load custom prompts data
-custom_prompts = load_custom_prompts()
+# Remove all custom prompt related variables and functions
 
 # Global state variables
 conversations: Dict[int, List[Dict]] = {}
-channel_prompt_settings: Dict[int, str] = load_json_data(PROMPT_SETTINGS_FILE)
-dm_prompt_settings: Dict[int, str] = load_json_data(DM_PROMPT_SETTINGS_FILE)
+channel_format_settings: Dict[int, str] = load_json_data(FORMAT_SETTINGS_FILE)
+dm_format_settings: Dict[int, str] = load_json_data(DM_FORMAT_SETTINGS_FILE)
+server_format_defaults: Dict[int, str] = load_json_data(SERVER_FORMAT_DEFAULTS_FILE)
+guild_nsfw_settings: Dict[int, bool] = load_json_data(NSFW_SETTINGS_FILE)
+dm_nsfw_settings: Dict[int, bool] = load_json_data(DM_NSFW_SETTINGS_FILE)
 multipart_responses: Dict[int, Dict[int, Tuple[List[int], str]]] = {}
 multipart_response_counter: Dict[int, int] = {}
 guild_personalities: Dict[int, str] = {}
@@ -1860,11 +1737,71 @@ custom_activity: str = load_json_data(ACTIVITY_FILE, convert_keys=False).get("cu
 guild_temperatures: Dict[int, float] = load_json_data(TEMPERATURE_FILE)
 welcome_dm_sent: Dict[int, bool] = load_json_data(WELCOME_SENT_FILE)
 dm_server_selection: Dict[int, int] = load_json_data(DM_SERVER_SELECTION_FILE)
-server_prompt_defaults: Dict[int, str] = load_json_data(SERVER_PROMPT_DEFAULTS_FILE)
 guild_dm_enabled: Dict[int, bool] = load_json_data(DM_ENABLED_FILE)
 bot_persona_name: str = "Assistant"
 recently_deleted_dm_messages: Dict[int, Set[int]] = {}
+
+# Temporary old system variables - TO BE COMPLETELY REMOVED
 custom_prompts: Dict[int, Dict[str, Dict[str, str]]] = {}
+channel_prompt_settings: Dict[int, str] = {}
+dm_prompt_settings: Dict[int, str] = {}
+
+def migrate_old_nsfw_styles():
+    """Migrate old NSFW styles to the new separate NSFW toggle system"""
+    # Migration mapping
+    nsfw_style_mapping = {
+        "conversational nsfw": ("conversational", True),
+        "asterisk nsfw": ("asterisk", True),
+        "narrative nsfw": ("narrative", True)
+    }
+    
+    # Migrate DM settings
+    dm_changed = False
+    for user_id, style in list(dm_prompt_settings.items()):
+        if style in nsfw_style_mapping:
+            new_style, nsfw_enabled = nsfw_style_mapping[style]
+            dm_prompt_settings[user_id] = new_style
+            dm_nsfw_settings[user_id] = nsfw_enabled
+            dm_changed = True
+            print(f"Migrated DM user {user_id}: {style} -> {new_style} (NSFW: {nsfw_enabled})")
+    
+    # Migrate channel settings
+    channel_changed = False
+    for channel_id, style in list(channel_prompt_settings.items()):
+        if style in nsfw_style_mapping:
+            new_style, nsfw_enabled = nsfw_style_mapping[style]
+            channel_prompt_settings[channel_id] = new_style
+            # Note: Channel-level NSFW isn't implemented yet, so this would need guild context
+            channel_changed = True
+            print(f"Migrated channel {channel_id}: {style} -> {new_style} (NSFW: {nsfw_enabled})")
+    
+    # Migrate server format defaults
+    server_changed = False
+    for guild_id, style in list(server_format_defaults.items()):
+        if style in nsfw_style_mapping:
+            new_style, nsfw_enabled = nsfw_style_mapping[style]
+            server_format_defaults[guild_id] = new_style
+            guild_nsfw_settings[guild_id] = nsfw_enabled
+            server_changed = True
+            print(f"Migrated server {guild_id}: {style} -> {new_style} (NSFW: {nsfw_enabled})")
+    
+    # Save migrated settings
+    if dm_changed:
+        save_json_data(DM_PROMPT_SETTINGS_FILE, dm_prompt_settings)
+        save_json_data(DM_NSFW_SETTINGS_FILE, dm_nsfw_settings)
+    
+    if channel_changed:
+        save_json_data(PROMPT_SETTINGS_FILE, channel_prompt_settings)
+    
+    if server_changed:
+        save_json_data(SERVER_FORMAT_DEFAULTS_FILE, server_format_defaults)
+        save_json_data(NSFW_SETTINGS_FILE, guild_nsfw_settings)
+    
+    if dm_changed or channel_changed or server_changed:
+        print("Migration complete: Old NSFW style variants have been converted to separate NSFW toggles")
+
+# Run migration on startup
+migrate_old_nsfw_styles()
 
 # Initialize managers
 lore_book = LoreBook()
@@ -1933,14 +1870,109 @@ def get_guild_emojis(guild: discord.Guild) -> str:
     available_emojis = list(guild.emojis)  # This includes both animated and static
     
     if available_emojis:
-        # Randomly select up to 10 emojis (mix of animated and static)
-        selected_emojis = random.sample(available_emojis, min(10, len(available_emojis)))
+        # Select up to 50 emojis (mix of animated and static)
+        max_emojis = min(50, len(available_emojis))
+        
+        # If we have more emojis than the limit, prioritize by usage and variety
+        if len(available_emojis) > max_emojis:
+            # Sort by available status first (prioritize available emojis)
+            available_emojis = sorted(available_emojis, key=lambda e: e.available, reverse=True)
+            
+            # Try to get a good mix of animated and static emojis
+            static_emojis = [e for e in available_emojis if not e.animated]
+            animated_emojis = [e for e in available_emojis if e.animated]
+            
+            selected_emojis = []
+            
+            # Take up to 35 static emojis and 15 animated emojis for variety
+            static_count = min(35, len(static_emojis), max_emojis)
+            animated_count = min(15, len(animated_emojis), max_emojis - static_count)
+            
+            if static_emojis:
+                selected_emojis.extend(random.sample(static_emojis, static_count))
+            if animated_emojis:
+                selected_emojis.extend(random.sample(animated_emojis, animated_count))
+            
+            # If we still need more emojis, fill from remaining
+            remaining_needed = max_emojis - len(selected_emojis)
+            if remaining_needed > 0:
+                remaining_emojis = [e for e in available_emojis if e not in selected_emojis]
+                if remaining_emojis:
+                    selected_emojis.extend(random.sample(remaining_emojis, min(remaining_needed, len(remaining_emojis))))
+        else:
+            selected_emojis = available_emojis
+        
+        # Sort by name for consistent display
+        selected_emojis.sort(key=lambda e: e.name.lower())
         
         # Format them in simple :name: format
         emoji_list = ', '.join([f":{emoji.name}:" for emoji in selected_emojis])
         
         return f"\n\n<emojis>Available custom emojis for this server:\n{emoji_list}\nTEMPLATE: When using custom emojis follow the exact format of :emoji: in your responses, otherwise they won't work! Limit their usage.\nREACTIONS: You can also react to the users' messages with emojis! To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] or [REACT: :custom_emoji:]. Occasionally, react to show emotion, agreement, humor, or acknowledgment.</emojis>"
     return ""
+
+def get_guild_emoji_list(guild: discord.Guild) -> str:
+    """Get simple comma-separated list of guild emojis for system prompt
+    
+    Selects up to 50 emojis from the server, prioritizing:
+    - Available emojis over unavailable ones
+    - A mix of static and animated emojis (roughly 35 static, 15 animated)
+    - Alphabetical order for consistency
+    """
+    if not guild:
+        return "No custom emojis available."
+    
+    # Get both animated and non-animated emojis
+    available_emojis = list(guild.emojis)
+    
+    if not available_emojis:
+        return "No custom emojis available for this server."
+    
+    # Select up to 50 emojis (mix of animated and static)
+    max_emojis = min(50, len(available_emojis))
+    
+    # If we have more emojis than the limit, prioritize by usage and variety
+    if len(available_emojis) > max_emojis:
+        # Sort by available status first (prioritize available emojis)
+        available_emojis = sorted(available_emojis, key=lambda e: e.available, reverse=True)
+        
+        # Try to get a good mix of animated and static emojis
+        static_emojis = [e for e in available_emojis if not e.animated]
+        animated_emojis = [e for e in available_emojis if e.animated]
+        
+        selected_emojis = []
+        
+        # Take up to 35 static emojis and 15 animated emojis for variety
+        static_count = min(35, len(static_emojis), max_emojis)
+        animated_count = min(15, len(animated_emojis), max_emojis - static_count)
+        
+        if static_emojis:
+            selected_emojis.extend(random.sample(static_emojis, static_count))
+        if animated_emojis:
+            selected_emojis.extend(random.sample(animated_emojis, animated_count))
+        
+        # If we still need more emojis, fill from remaining
+        remaining_needed = max_emojis - len(selected_emojis)
+        if remaining_needed > 0:
+            remaining_emojis = [e for e in available_emojis if e not in selected_emojis]
+            if remaining_emojis:
+                selected_emojis.extend(random.sample(remaining_emojis, min(remaining_needed, len(remaining_emojis))))
+    else:
+        selected_emojis = available_emojis
+    
+    # Sort by name for consistent display
+    selected_emojis.sort(key=lambda e: e.name.lower())
+    
+    # Format them in simple :name: format
+    emoji_count = len(selected_emojis)
+    total_count = len(available_emojis)
+    emoji_list = ', '.join([f":{emoji.name}:" for emoji in selected_emojis])
+    
+    # Add a note if we're showing a subset
+    if emoji_count < total_count:
+        emoji_list += f" (showing {emoji_count} of {total_count} available emojis)"
+    
+    return emoji_list
 
 async def process_and_add_reactions(bot_response: str, user_message: discord.Message) -> str:
     """Process bot response for reaction instructions and add reactions to user message"""
@@ -2247,7 +2279,7 @@ async def get_bot_last_logical_message(channel) -> Tuple[List[discord.Message], 
                 try:
                     msg = await channel.fetch_message(msg_id)
                     all_messages.append(msg)
-                except:
+                except Exception:
                     pass
             all_messages.sort(key=lambda m: m.created_at)
             return all_messages, full_content
@@ -2632,58 +2664,27 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
         print(f"Error loading DM history: {e}")
         return []
 
-def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = None, channel_id: int = None, is_dm: bool = False, user_id: int = None, username: str = None) -> str:
-    """Generate complete system prompt with personality, emojis, and memory context"""
+def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = None, channel_id: int = None, is_dm: bool = False, user_id: int = None, username: str = None, history: List[Dict] = None) -> str:
+    """Generate complete system prompt following Anthropic's official guide structure"""
     
     # Update the global persona name for this context
     update_bot_persona_name(guild_id, user_id, is_dm)
     
-    # Get prompt type for channel/DM
+    # Get format style for channel/DM
     if is_dm:
-        prompt_type = dm_prompt_settings.get(user_id, "conversational")
+        format_style = dm_format_settings.get(user_id, "conversational")
     else:
         # Check for channel-specific setting first
-        channel_style = channel_prompt_settings.get(channel_id) if channel_id else None
+        channel_style = channel_format_settings.get(channel_id) if channel_id else None
         
         if channel_style:
-            prompt_type = channel_style
+            format_style = channel_style
         else:
             # Check for persistent server default
-            server_style = server_prompt_defaults.get(guild_id) if guild_id else None
-            prompt_type = server_style if server_style else "conversational"
+            server_style = server_format_defaults.get(guild_id) if guild_id else None
+            format_style = server_style if server_style else "conversational"
     
-    # Check if it's a custom prompt
-    if guild_id and guild_id in custom_prompts and prompt_type in custom_prompts[guild_id]:
-        # Use custom prompt
-        custom_prompt_data = custom_prompts[guild_id][prompt_type]
-        if is_dm:
-            system_prompt = custom_prompt_data["prompt"].format(username=username or "this user")
-        else:
-            system_prompt = custom_prompt_data["prompt"]
-    else:
-        # Use built-in prompts
-        if is_dm:
-            prompt_map = {
-                "conversational": CONVERSATIONAL_DM_SYSTEM_PROMPT,
-                "asterisk": ASTERISK_ROLEPLAY_DM_PROMPT,
-                "narrative": NARRATIVE_ROLEPLAY_DM_PROMPT,
-                "conversational nsfw": CONVERSATIONAL_DM_SYSTEM_PROMPT_NSFW,
-                "asterisk nsfw": ASTERISK_ROLEPLAY_DM_PROMPT_NSFW,
-                "narrative nsfw": NARRATIVE_ROLEPLAY_DM_PROMPT_NSFW
-            }
-            system_prompt = prompt_map.get(prompt_type, CONVERSATIONAL_DM_SYSTEM_PROMPT).format(username=username or "this user")
-        else:
-            prompt_map = {
-                "conversational": CONVERSATIONAL_SYSTEM_PROMPT,
-                "asterisk": ASTERISK_ROLEPLAY_PROMPT,
-                "narrative": NARRATIVE_ROLEPLAY_PROMPT,
-                "conversational nsfw": CONVERSATIONAL_SYSTEM_PROMPT_NSFW,
-                "asterisk nsfw": ASTERISK_ROLEPLAY_PROMPT_NSFW,
-                "narrative nsfw": NARRATIVE_ROLEPLAY_PROMPT_NSFW
-            }
-            system_prompt = prompt_map.get(prompt_type, CONVERSATIONAL_SYSTEM_PROMPT)
-
-    # Handle DM personality settings (rest of function remains the same)
+    # Handle DM personality settings
     if is_dm and user_id:
         if user_id in dm_manager.dm_personalities:
             preferred_guild_id, preferred_personality = dm_manager.dm_personalities[user_id]
@@ -2707,38 +2708,94 @@ def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = N
     
     # Get personality prompt
     if guild_id and guild_id in custom_personalities and personality_name in custom_personalities[guild_id]:
-        personality_prompt = custom_personalities[guild_id][personality_name]["prompt"]
+        persona_description = custom_personalities[guild_id][personality_name]["prompt"]
     else:
-        personality_prompt = DEFAULT_PERSONALITIES["default"]["prompt"]
+        persona_description = DEFAULT_PERSONALITIES["default"]["prompt"]
+
+    # Build the new Anthropic-style system prompt
+    location_text = "on the server's name" if not is_dm else "via direct messages"
     
-    # Use the global persona name in the combined prompt
-    combined_prompt = f"You are {bot_persona_name}, a real person. {system_prompt}\n\n<persona>This is your persona:\n{personality_prompt}</persona>"
+    # Check for NSFW setting
+    nsfw_enabled = False
+    if is_dm and user_id:
+        nsfw_enabled = dm_nsfw_settings.get(user_id, False)
+    elif guild_id:
+        nsfw_enabled = guild_nsfw_settings.get(guild_id, False)
+    
+    # Base prompt structure
+    system_prompt = """You will be acting as a real person named {bot_persona_name}. Your goal is to chat with users on Discord. You will be replying to the users {location_text}, and they will be confused if you don't respond in character.
 
+Maintain a natural, informal, and conversational tone.
+
+Here is a description of your persona:
+<persona>
+{persona_description}
+</persona>
+
+Here is some information about the users you're talking to:
+<lore>
+{lore}
+</lore>
+
+Here are the emojis available to you that you can use:
+<emojis>
+{emoji_list}
+</emojis>
+
+Here is a relevant memory of a past conversation. It can be empty, if none was recalled:
+<memory>
+{memory}
+</memory>
+
+Here are some important rules you must always follow:
+- Always stay in character.
+- Never respond or roleplay for others.
+- Actively participate in conversations, ask follow-up questions, share anecdotes, shift topics, and have fun."""
+
+    # Add NSFW section if enabled
+    if nsfw_enabled:
+        system_prompt += "\n- Anything goes, since all the users are adults and they know what they're getting into; profanities, dark themes, obscene jokes, kinky cybersex, controversial opinions, and gore are allowed due to the nature of this NSFW chat."
+
+    system_prompt += """
+
+Here is the conversation history (between the users and you). It could be empty if there's none yet:
+<history>"""
+
+    # Now replace the dynamic placeholders with actual data
+    system_prompt = system_prompt.replace("{bot_persona_name}", bot_persona_name)
+    system_prompt = system_prompt.replace("{location_text}", location_text)
+    system_prompt = system_prompt.replace("{persona_description}", persona_description)
+
+    # Now replace placeholder content with actual data
+    
     # Add emoji information
-    if prompt_type == "conversational" or "conversational nsfw":
-        if guild and not is_dm:
-            emoji_info = get_guild_emojis(guild)
-            combined_prompt += emoji_info
-        elif is_dm:
-            combined_prompt += f"\n\n<emojis>Available emojis:\nYou may use all the standard emojis, for example: 💀 🤔 ❤️ 😠 etc. Add spaces or new lines after them. Limit their usage.\nREACTIONS: You can also react to the user's messages with emojis! To add a reaction, include [REACT: emoji] anywhere in your response. Example: [REACT: 😄]. Occasionally, react to show emotion, agreement, humor, or acknowledgment.</emojis>"
+    if guild and not is_dm:
+        emoji_list = get_guild_emoji_list(guild)
+    elif is_dm:
+        emoji_list = "You may use all the standard emojis, for example: 💀 🤔 ❤️ 😠 etc. Add spaces or new lines after them. Limit their usage."
+    else:
+        emoji_list = "Standard Discord emojis available."
 
-    # Add relevant memories (rest of function remains the same)
+    # Add relevant memories
+    memory_content = ""
     if query:
         if is_dm and user_id:
             # Use DM memories
             relevant_memories = memory_manager.search_dm_memories(user_id, query)
             if relevant_memories:
-                memory_text = "\n".join([mem["memory"] for mem in relevant_memories])
-                combined_prompt += f"\n\n<memory>A memory of your past conversation:\n{memory_text}</memory>"
+                memory_content = "\n".join([mem["memory"] for mem in relevant_memories])
         elif guild_id and not is_dm:
             # Use server memories
             relevant_memories = memory_manager.search_memories(guild_id, query)
             if relevant_memories:
-                memory_text = "\n".join([mem["memory"] for mem in relevant_memories])
-                combined_prompt += f"\n\n<memory>A memory of the past conversation:\n{memory_text}</memory>"
+                memory_content = "\n".join([mem["memory"] for mem in relevant_memories])
+    
+    if not memory_content:
+        memory_content = "No relevant memories found."
 
     # Add lorebook entries and channel context
-    if guild_id and not is_dm and channel_id in recent_participants:
+    lore_content = ""
+    if guild_id and not is_dm and channel_id and channel_id in recent_participants:
         # Server lore - get individual lore entries and channel context
         lore_entries = []
         guild_obj = client.get_guild(guild_id)
@@ -2756,16 +2813,23 @@ def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = N
             channel_name = channel_obj.name if channel_obj else "unknown-channel"
             
             if lore_entries:
-                lore_text = "\n".join(lore_entries)
-                lore_text += f"\nCHANNEL: You are currently chatting in the {channel_name} channel on the {guild_obj.name} server."
-                combined_prompt += f"\n\n<lore>Lore about the server users:\n{lore_text}</lore>"
+                lore_content = "\n".join(lore_entries)
+                lore_content += f"\nChannel: You are currently chatting in the {channel_name} channel on the {guild_obj.name} server."
     elif is_dm and user_id:
         # DM lore - personal info about the user
         user_lore = lore_book.get_dm_entry(user_id)
         if user_lore:
-            combined_prompt += f"\n\n<lore>User's lore:\n• About {username}: {user_lore}</lore>"
+            lore_content = f"• About {username}: {user_lore}"
 
-    return combined_prompt
+    if not lore_content:
+        lore_content = "No specific lore available about the users."
+
+    # Replace placeholders (no need for last_message placeholder anymore)
+    system_prompt = system_prompt.replace("{lore}", lore_content)
+    system_prompt = system_prompt.replace("{emoji_list}", emoji_list)
+    system_prompt = system_prompt.replace("{memory}", memory_content)
+
+    return system_prompt
 
 def get_personality_name(guild_id: int) -> str:
     """Get display name for guild's active personality"""
@@ -2829,7 +2893,7 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             history = get_conversation_history(channel_id)
 
         # Get system prompt with username for DMs
-        system_prompt = get_system_prompt(guild_id, guild, user_message, channel_id, is_dm, user_id, user_name)
+        system_prompt = get_system_prompt(guild_id, guild, user_message, channel_id, is_dm, user_id, user_name, history)
 
         # Get temperature - use selected/shared guild for DMs
         temperature = 1.0
@@ -2868,6 +2932,57 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                     if max_content_length > 0:
                         last_message["content"] = last_message["content"][:max_content_length] + " [Message truncated due to size limit]"
                         print(f"Truncated message content from {original_length} to {max_content_length} chars")
+
+        # Get the last user message for the <message> section
+        last_user_message = ""
+        if history:
+            for msg in reversed(history):
+                if msg.get("role") == "user":
+                    last_user_message = msg.get("content", "")
+                    break
+        
+        if not last_user_message:
+            last_user_message = user_message
+
+        # Get format-specific instructions
+        format_instructions = ""
+        format_style = "conversational"
+        if is_dm:
+            format_style = dm_format_settings.get(user_id, "conversational")
+        else:
+            channel_style = channel_format_settings.get(channel_id) if channel_id else None
+            if channel_style:
+                format_style = channel_style
+            else:
+                server_style = server_format_defaults.get(guild_id) if guild_id else None
+                format_style = server_style if server_style else "conversational"
+        
+        if format_style == "conversational":
+            format_instructions = "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. No asterisks or em-dashes. Do not repeat after yourself or others."
+        elif format_style == "asterisk":
+            format_instructions = "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. No em-dashes or nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative."
+        elif format_style == "narrative":
+            format_instructions = "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. No em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
+
+        # Append the system messages to complete the structure
+        history.append({"role": "system", "content": """</history>
+
+Here is the last message in the conversation:
+<message>"""})
+        
+        history.append({"role": "system", "content": last_user_message})
+        
+        history.append({"role": "system", "content": f"""</message>
+
+How do you respond in the chat?
+
+Think about it first.
+
+If you choose to use a server emoji in your response, follow the exact format of :emoji: or they won't work! Don't spam them.
+You may also react to the users' messages. To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] (for standard emojis) or [REACT: :custom_emoji:] (for custom emojis). You don't have to react every time.
+You can also mention a specific user by including <@user_id> in your message, but only do so if they are not currently participating in the conversation, and you want to grab their attention. Otherwise, you don't need to state any names; everyone can deduce to whom you're talking from context alone.
+
+{format_instructions}"""})
 
         bot_response = await ai_manager.generate_response(
             messages=history,
@@ -4222,19 +4337,9 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name="💬 Conversation Style Commands",
-        value="`/prompt_set <style> [scope]` - Set conversation style (auto-detects DMs vs servers)\n`/prompt_info` - Show current style and available options",
+        name="💬 Response Format Commands",
+        value="`/format_set <style> [scope]` - Set response format (conversational/asterisk/narrative)\n`/format_info` - Show current format and available options\n`/format_view [type]` - View format instruction templates\n`/format_edit <type> <instructions>` - Edit format templates (Admin only)\n`/nsfw_set <enabled> [scope]` - Enable/disable NSFW content\n`/nsfw_info` - Show current NSFW settings",
         inline=False
-    )
-
-    embed.add_field(
-    name="📝 Custom Prompt Commands",
-    value="`/prompt_create <name> <display_name> <prompt> [nsfw]` - Create custom conversation prompt (Admin only)\n"
-          "`/prompt_list_custom` - List all custom server prompts\n"
-          "`/prompt_view <name>` - View custom prompt details\n"
-          "`/prompt_edit <name> [display_name] [prompt] [nsfw]` - Edit custom prompt (Admin only)\n"
-          "`/prompt_delete <name>` - Delete custom prompt (Admin only)",
-    inline=False
     )
     
     embed.add_field(
@@ -4307,280 +4412,450 @@ async def help_command(interaction: discord.Interaction):
     
     await interaction.followup.send(embed=embed)
 
-# CUSTOM PROMPT COMMANDS
+# CUSTOM PROMPT COMMANDS REMOVED
+# All prompt-related commands have been removed as part of the restructuring
 
-@tree.command(name="prompt_create", description="Create a custom conversation prompt for this server (Admin only)")
-async def create_custom_prompt(interaction: discord.Interaction, name: str, display_name: str, prompt: str, nsfw: bool = False):
-    """Create a custom conversation prompt"""
+# FORMAT COMMANDS
+
+@tree.command(name="format_set", description="Set conversation format style")
+async def set_format_style(interaction: discord.Interaction, style: str, scope: str = None):
+    """Set conversation format with automatic DM/server detection and scope options"""
     await interaction.response.defer(ephemeral=True)
     
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be created in servers!")
+    is_dm = isinstance(interaction.channel, discord.DMChannel)
+    style = style.lower()
+    
+    # Get valid format styles
+    valid_styles = ["conversational", "asterisk", "narrative"]
+    
+    # Check if style is valid
+    if style not in valid_styles:
+        available_list = ["conversational", "asterisk", "narrative"]
+        
+        await interaction.followup.send(f"❌ **Invalid format style!**\n\n"
+                                       f"**Available styles:** {', '.join(available_list)}\n"
+                                       f"**Usage:** `/format_set <style>` {'(DMs)' if is_dm else '[scope]'}")
         return
     
-    # Check admin permissions
-    if not check_admin_permissions(interaction):
-        await interaction.followup.send("❌ Only administrators can create custom prompts!")
-        return
-    
-    # Validate input parameters
-    if not (2 <= len(name) <= 32):
-        await interaction.followup.send("❌ Prompt name must be between 2 and 32 characters.")
-        return
-    
-    if not (2 <= len(display_name) <= 64):
-        await interaction.followup.send("❌ Display name must be between 2 and 64 characters.")
-        return
-    
-    if not (50 <= len(prompt) <= 4000):
-        await interaction.followup.send("❌ Prompt must be between 50 and 4000 characters.")
-        return
-    
-    clean_name = name.lower().replace(" ", "_")
-    
-    # Prevent overriding built-in prompts
-    built_in_prompts = ["conversational", "asterisk", "narrative", "conversational_nsfw", "asterisk_nsfw", "narrative_nsfw"]
-    if clean_name in built_in_prompts:
-        await interaction.followup.send(f"❌ Cannot override built-in prompt '{clean_name}'! Choose a different name.")
-        return
-    
-    # Initialize guild's custom prompts if needed
-    if interaction.guild.id not in custom_prompts:
-        custom_prompts[interaction.guild.id] = {}
-    
-    # Check for existing prompt
-    if clean_name in custom_prompts[interaction.guild.id]:
-        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' already exists! Use `/prompt_edit` to modify it.")
-        return
-    
-    # Create custom prompt
-    custom_prompts[interaction.guild.id][clean_name] = {
-        "name": display_name,
-        "prompt": prompt,
-        "nsfw": nsfw
+    # Get style descriptions
+    style_descriptions = {
+        "conversational": "Normal Discord chat (no roleplay actions)",
+        "asterisk": "Roleplay with *action descriptions*",
+        "narrative": "Rich, story-driven narrative roleplay"
     }
     
-    save_custom_prompts()
+    style_description = style_descriptions.get(style, "Custom format style")
     
-    prompt_preview = prompt[:150] + ('...' if len(prompt) > 150 else '')
-    nsfw_marker = " 🔞" if nsfw else ""
-    
-    await interaction.followup.send(f"✅ **Created custom prompt: {display_name}{nsfw_marker}** (`{clean_name}`)!\n\n"
-                                   f"**Preview:** {prompt_preview}\n\n"
-                                   f"Use `/prompt_set {clean_name}` to activate it in channels.\n"
-                                   f"💡 **Tips:**\n"
-                                   f"• Use `{{username}}` in DM prompts for personalization\n"
-                                   f"• Include formatting instructions for consistency")
-
-@tree.command(name="prompt_list_custom", description="List all custom prompts for this server")
-async def list_custom_prompts(interaction: discord.Interaction):
-    """Display all custom prompts for the server"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be viewed in servers!")
-        return
-    
-    if interaction.guild.id not in custom_prompts or not custom_prompts[interaction.guild.id]:
-        await interaction.followup.send("❌ **No custom prompts found for this server.**\n\n"
-                                       "Use `/prompt_create` to create custom conversation prompts! (Admin only)\n\n"
-                                       "**Built-in prompts available:**\n"
-                                       "• `conversational` - Normal Discord chat\n"
-                                       "• `asterisk` - Roleplay with *actions*\n"
-                                       "• `narrative` - Rich storytelling\n"
-                                       "• `conversational nsfw`, `asterisk nsfw`, `narrative nsfw` - NSFW versions")
-        return
-    
-    embed = discord.Embed(
-        title="📝 Custom Server Prompts",
-        description=f"Custom conversation prompts for {interaction.guild.name}:",
-        color=0x00ff99
-    )
-    
-    # Group by NSFW status
-    sfw_prompts = []
-    nsfw_prompts = []
-    
-    for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
-        prompt_info = f"**`{prompt_name}`** - {prompt_data['name']}\n{prompt_data['prompt'][:100]}..."
+    if is_dm:
+        dm_format_settings[interaction.user.id] = style
+        save_json_data(DM_FORMAT_SETTINGS_FILE, dm_format_settings)
         
-        if prompt_data.get("nsfw", False):
-            nsfw_prompts.append(prompt_info)
+        await interaction.followup.send(f"✅ **Your DM format style set to {style.title()}!**\n"
+                                    f"**Description:** {style_description}\n\n"
+                                    f"💬 This setting applies to all your DMs with the bot.")
+    else:
+        # Server - handle scope options
+        if scope is None:
+            await interaction.followup.send(f"❌ **Please specify scope!**\n\n"
+                                           f"**Valid scopes:** `channel` or `server`\n\n"
+                                           f"**Examples:**\n"
+                                           f"• `/format_set {style} channel` - Set for this channel only\n"
+                                           f"• `/format_set {style} server` - Set for entire server (Admin only)")
+            return
+        
+        # Validate scope
+        scope = scope.lower()
+        if scope not in ["channel", "server"]:
+            await interaction.followup.send(f"❌ **Invalid scope!**\n\n"
+                                           f"**Valid scopes:** `channel` or `server`")
+            return
+        
+        if scope == "channel":
+            # Set for current channel
+            channel_format_settings[interaction.channel.id] = style
+            save_json_data(FORMAT_SETTINGS_FILE, channel_format_settings)
+            
+            await interaction.followup.send(f"✅ **Format style set to {style.title()} for #{interaction.channel.name}!**\n"
+                                           f"**Description:** {style_description}")
+        
+        elif scope == "server":
+            # Check admin permissions for server-wide changes
+            if not check_admin_permissions(interaction):
+                await interaction.followup.send(f"❌ **Administrator permissions required!**\n\n"
+                                               f"You need administrator permissions to set server-wide format styles.\n"
+                                               f"💡 You can still use `/format_set {style} channel` to set the format for this channel only.")
+                return
+            
+            # Set server default and save to persistent storage
+            server_format_defaults[interaction.guild.id] = style
+            save_json_data(SERVER_FORMAT_DEFAULTS_FILE, server_format_defaults)
+            
+            await interaction.followup.send(f"✅ **Server default format style set to {style.title()}!**\n"
+                                           f"**Description:** {style_description}\n\n"
+                                           f"🏰 This applies to all channels without specific format settings.")
+
+@tree.command(name="format_info", description="Show the current format style for this channel or DM")
+async def show_format_info(interaction: discord.Interaction):
+    """Display current format style and available options"""
+    await interaction.response.defer(ephemeral=True)
+    
+    is_dm = isinstance(interaction.channel, discord.DMChannel)
+    
+    if is_dm:
+        current_style = dm_format_settings.get(interaction.user.id, "conversational")
+        title_prefix = "🔒 DM"
+        embed_description = f"Current format: **{current_style.title()}**"
+    else:
+        # Check for channel-specific setting first
+        channel_style = channel_format_settings.get(interaction.channel.id)
+        
+        if channel_style:
+            current_style = channel_style
+            style_source = f"Channel-specific (#{interaction.channel.name})"
         else:
-            sfw_prompts.append(prompt_info)
+            # Check for persistent server default
+            server_style = server_format_defaults.get(interaction.guild.id)
+            
+            if server_style:
+                current_style = server_style
+                style_source = f"Server default ({interaction.guild.name})"
+            else:
+                current_style = "conversational"
+                style_source = "Global default (not set)"
+        
+        title_prefix = "📢 Channel"
+        embed_description = f"Current format: **{current_style.title()}**\nSource: {style_source}"
     
-    if sfw_prompts:
-        embed.add_field(
-            name="✅ SFW Prompts",
-            value="\n\n".join(sfw_prompts),
-            inline=False
-        )
-    
-    if nsfw_prompts:
-        embed.add_field(
-            name="🔞 NSFW Prompts", 
-            value="\n\n".join(nsfw_prompts),
-            inline=False
-        )
-    
-    embed.set_footer(text="Use /prompt_set <name> to activate • /prompt_edit to modify (Admin) • /prompt_delete to remove (Admin)")
-    await interaction.followup.send(embed=embed)
-
-@tree.command(name="prompt_edit", description="Edit a custom conversation prompt (Admin only)")
-async def edit_custom_prompt(interaction: discord.Interaction, name: str, display_name: str = None, prompt: str = None, nsfw: bool = None):
-    """Edit an existing custom prompt"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be edited in servers!")
-        return
-    
-    # Check admin permissions
-    if not check_admin_permissions(interaction):
-        await interaction.followup.send("❌ Only administrators can edit custom prompts!")
-        return
-    
-    clean_name = name.lower().replace(" ", "_")
-    
-    # Check if prompt exists
-    if (interaction.guild.id not in custom_prompts or 
-        clean_name not in custom_prompts[interaction.guild.id]):
-        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!\n"
-                                       "Use `/prompt_list_custom` to see available custom prompts.")
-        return
-    
-    # Update provided fields
-    updated_fields = []
-    
-    if display_name is not None:
-        if not (2 <= len(display_name) <= 64):
-            await interaction.followup.send("❌ Display name must be between 2 and 64 characters.")
-            return
-        custom_prompts[interaction.guild.id][clean_name]["name"] = display_name
-        updated_fields.append(f"Display name → {display_name}")
-    
-    if prompt is not None:
-        if not (50 <= len(prompt) <= 4000):
-            await interaction.followup.send("❌ Prompt must be between 50 and 4000 characters.")
-            return
-        custom_prompts[interaction.guild.id][clean_name]["prompt"] = prompt
-        prompt_preview = prompt[:100] + ('...' if len(prompt) > 100 else '')
-        updated_fields.append(f"Prompt → {prompt_preview}")
-    
-    if nsfw is not None:
-        custom_prompts[interaction.guild.id][clean_name]["nsfw"] = nsfw
-        updated_fields.append(f"NSFW → {'Yes 🔞' if nsfw else 'No ✅'}")
-    
-    if not updated_fields:
-        await interaction.followup.send("❌ No changes specified! Provide display_name, prompt, and/or nsfw to edit.")
-        return
-    
-    save_custom_prompts()
-    await interaction.followup.send(f"✅ **Updated custom prompt `{clean_name}`:**\n" + "\n".join(updated_fields))
-
-@tree.command(name="prompt_delete", description="Delete a custom conversation prompt (Admin only)")
-async def delete_custom_prompt(interaction: discord.Interaction, name: str):
-    """Delete a custom prompt"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be deleted in servers!")
-        return
-    
-    # Check admin permissions
-    if not check_admin_permissions(interaction):
-        await interaction.followup.send("❌ Only administrators can delete custom prompts!")
-        return
-    
-    clean_name = name.lower().replace(" ", "_")
-    
-    # Check if prompt exists
-    if (interaction.guild.id not in custom_prompts or 
-        clean_name not in custom_prompts[interaction.guild.id]):
-        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!")
-        return
-    
-    # Check if this prompt is currently being used anywhere
-    prompt_in_use = []
-    
-    # Check channel settings
-    for channel_id, channel_prompt in channel_prompt_settings.items():
-        if channel_prompt == clean_name:
-            channel = interaction.guild.get_channel(channel_id)
-            if channel:
-                prompt_in_use.append(f"#{channel.name}")
-    
-    # Check server default
-    if server_prompt_defaults.get(interaction.guild.id) == clean_name:
-        prompt_in_use.append("server default")
-    
-    if prompt_in_use:
-        await interaction.followup.send(f"⚠️ **Cannot delete prompt `{clean_name}`!**\n\n"
-                                       f"It's currently being used by: {', '.join(prompt_in_use)}\n\n"
-                                       f"Please change those settings first, then try deleting again.")
-        return
-    
-    # Delete prompt
-    display_name = custom_prompts[interaction.guild.id][clean_name]["name"]
-    del custom_prompts[interaction.guild.id][clean_name]
-    
-    save_custom_prompts()
-    await interaction.followup.send(f"🗑️ **Deleted custom prompt: {display_name}** (`{clean_name}`)!")
-
-@tree.command(name="prompt_view", description="View a specific custom prompt in full detail")
-async def view_custom_prompt(interaction: discord.Interaction, name: str):
-    """View a custom prompt in detail"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be viewed in servers!")
-        return
-    
-    clean_name = name.lower().replace(" ", "_")
-    
-    # Check if prompt exists
-    if (interaction.guild.id not in custom_prompts or 
-        clean_name not in custom_prompts[interaction.guild.id]):
-        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!\n"
-                                       "Use `/prompt_list_custom` to see available prompts.")
-        return
-    
-    prompt_data = custom_prompts[interaction.guild.id][clean_name]
-    
-    nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-    
+    # Create embed
     embed = discord.Embed(
-        title=f"📝 {prompt_data['name']}{nsfw_marker}",
-        description=f"**Prompt ID:** `{clean_name}`",
-        color=0xff6b6b if prompt_data.get("nsfw", False) else 0x00ff99
+        title=f"{title_prefix} Format Info",
+        description=embed_description,
+        color=0x00ff00
     )
     
-    # Split long prompts into multiple fields
-    prompt_text = prompt_data["prompt"]
-    if len(prompt_text) <= 1024:
-        embed.add_field(name="Prompt Content", value=prompt_text, inline=False)
-    else:
-        # Split into chunks
-        chunks = [prompt_text[i:i+1024] for i in range(0, len(prompt_text), 1024)]
-        for i, chunk in enumerate(chunks):
-            field_name = f"Prompt Content (Part {i+1})" if len(chunks) > 1 else "Prompt Content"
-            embed.add_field(name=field_name, value=chunk, inline=False)
-    
-    # Show usage instructions
+    # Built-in format styles
     embed.add_field(
-        name="💡 Usage",
-        value=f"**Activate:** `/prompt_set {clean_name} <scope>`\n"
-              f"**DM Note:** Use `{{username}}` for personalization in DM prompts",
+        name="📝 Available Format Styles",
+        value="**`conversational`** - Normal Discord chat (no roleplay actions)\n"
+              "**`asterisk`** - Roleplay with *action descriptions*\n"
+              "**`narrative`** - Rich, story-driven narrative roleplay",
         inline=False
     )
     
-    embed.set_footer(text="Use /prompt_edit to modify (Admin) • /prompt_delete to remove (Admin)")
+    # Add footer
+    if is_dm:
+        embed.set_footer(text="Use /format_set <style> to change your DM format style!")
+    else:
+        embed.set_footer(text="Use /format_set <style> <scope> to change format style")
+    
     await interaction.followup.send(embed=embed)
+
+# PERSONALITY COMMANDS
 
 # CONVERSATION STYLE COMMANDS
 
-@tree.command(name="prompt_set", description="Set conversation style - auto-detects DMs vs servers")
-async def set_prompt_style(interaction: discord.Interaction, style: str, scope: str = None):
+@tree.command(name="format_edit", description="Edit format instruction templates (Admin only)")
+async def edit_format_instructions(interaction: discord.Interaction, format_type: str, instructions: str):
+    """Edit format instruction templates for conversational, asterisk, or narrative styles"""
+    await interaction.response.defer(ephemeral=True)
+    
+    # Check admin permissions
+    if not check_admin_permissions(interaction):
+        await interaction.followup.send("❌ Only administrators can edit format instructions!")
+        return
+    
+    # Validate format type
+    format_type = format_type.lower()
+    if format_type not in VALID_FORMAT_STYLES:
+        await interaction.followup.send(f"❌ **Invalid format type!**\n\n"
+                                       f"**Valid types:** {', '.join(VALID_FORMAT_STYLES)}")
+        return
+    
+    # Validate instructions length
+    if not (10 <= len(instructions) <= 1000):
+        await interaction.followup.send("❌ Format instructions must be between 10 and 1000 characters.")
+        return
+    
+    # TODO: Store custom format instructions in a file/database
+    # For now, show what would be changed
+    
+    embed = discord.Embed(
+        title="⚠️ Format Edit Preview",
+        description="This feature is coming soon! Here's what would be changed:",
+        color=0xffaa00
+    )
+    
+    embed.add_field(
+        name=f"📝 Format Type: {format_type.title()}",
+        value=f"**New Instructions:**\n{instructions}",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="💡 Note",
+        value="Format instruction editing will be implemented in a future update. "
+              "Currently, format instructions are built into the system.",
+        inline=False
+    )
+    
+    embed.set_footer(text="Use /format_info to see current format styles")
+    await interaction.followup.send(embed=embed)
+
+# Autocomplete for format_edit command
+@edit_format_instructions.autocomplete('format_type')
+async def format_type_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Provide autocomplete options for format types"""
+    choices = [
+        app_commands.Choice(name="Conversational", value="conversational"),
+        app_commands.Choice(name="Asterisk Roleplay", value="asterisk"), 
+        app_commands.Choice(name="Narrative Roleplay", value="narrative")
+    ]
+    
+    # Filter by current input
+    if current:
+        choices = [choice for choice in choices if current.lower() in choice.name.lower()]
+    
+    return choices
+
+@tree.command(name="format_view", description="View current format instruction templates")
+async def view_format_instructions(interaction: discord.Interaction, format_type: str = None):
+    """View format instruction templates for all or specific format styles"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if format_type:
+        format_type = format_type.lower()
+        if format_type not in VALID_FORMAT_STYLES:
+            await interaction.followup.send(f"❌ **Invalid format type!**\n\n"
+                                           f"**Valid types:** {', '.join(VALID_FORMAT_STYLES)}")
+            return
+    
+    # Get current hardcoded format instructions
+    format_instructions = {
+        "conversational": "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. No asterisks or em-dashes. Do not repeat after yourself or others.",
+        "asterisk": "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. No em-dashes or nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative.",
+        "narrative": "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. No em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
+    }
+    
+    embed = discord.Embed(
+        title="📋 Format Instruction Templates",
+        color=0x00ff00
+    )
+    
+    if format_type:
+        # Show specific format
+        embed.description = f"**{format_type.title()} Format Instructions:**"
+        embed.add_field(
+            name=f"📝 {format_type.title()} Style", 
+            value=format_instructions[format_type],
+            inline=False
+        )
+    else:
+        # Show all formats
+        embed.description = "Current format instruction templates:"
+        
+        for fmt_type in VALID_FORMAT_STYLES:
+            embed.add_field(
+                name=f"📝 {fmt_type.title()} Style",
+                value=format_instructions[fmt_type],
+                inline=False
+            )
+    
+    embed.add_field(
+        name="💡 Note",
+        value="These are currently built-in templates. Use `/format_edit` to customize them (Admin only).",
+        inline=False
+    )
+    
+    embed.set_footer(text="Use /format_set to change your format style • /format_info for current settings")
+    await interaction.followup.send(embed=embed)
+
+# Autocomplete for format_view command
+@view_format_instructions.autocomplete('format_type')
+async def format_view_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Provide autocomplete options for format types"""
+    choices = [
+        app_commands.Choice(name="Conversational", value="conversational"),
+        app_commands.Choice(name="Asterisk Roleplay", value="asterisk"), 
+        app_commands.Choice(name="Narrative Roleplay", value="narrative")
+    ]
+    
+    # Filter by current input
+    if current:
+        choices = [choice for choice in choices if current.lower() in choice.name.lower()]
+    
+    return choices
+
+# NSFW COMMANDS
+
+@tree.command(name="nsfw_set", description="Enable or disable NSFW content for this server/DM")
+@app_commands.describe(
+    enabled="Enable (True) or disable (False) NSFW content",
+    scope="Server scope (channel/server) - only for servers, not DMs"
+)
+async def set_nsfw(
+    interaction: discord.Interaction,
+    enabled: bool,
+    scope: str = None
+):
+    """Enable or disable NSFW content with automatic DM/server detection"""
+    await interaction.response.defer(ephemeral=True)
+    
+    is_dm = isinstance(interaction.channel, discord.DMChannel)
+    
+    if is_dm:
+        # DM - simple NSFW setting (scope not needed)
+        if scope is not None:
+            await interaction.followup.send(f"💡 **DM Mode**: You don't need to specify a scope in DMs.\n"
+                                        f"Setting your DM NSFW preference...")
+        
+        dm_nsfw_settings[interaction.user.id] = enabled
+        save_json_data(DM_NSFW_SETTINGS_FILE, dm_nsfw_settings)
+        
+        status = "enabled" if enabled else "disabled"
+        emoji = "🔞" if enabled else "✅"
+        
+        await interaction.followup.send(f"{emoji} **NSFW content {status} for your DMs!**\n\n"
+                                      f"💬 This setting applies to all your DMs with the bot.\n"
+                                      f"🎭 Use `/format_set` to choose your conversation style.")
+    else:
+        # Server - handle scope options
+        if scope is None:
+            # Show scope selection instead of executing
+            status_text = "enable" if enabled else "disable"
+            embed = discord.Embed(
+                title="🔞 Choose NSFW Scope",
+                description=f"You want to **{status_text}** NSFW content.\n**Please specify the scope:**",
+                color=0xffaa00 if enabled else 0x00ff00
+            )
+            
+            embed.add_field(
+                name="📢 For This Channel Only",
+                value=f"**Command:** `/nsfw_set {enabled} channel`\n"
+                      f"**Effect:** {status_text.title()}s NSFW for **#{interaction.channel.name}** only",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="🏰 For Entire Server",
+                value=f"**Command:** `/nsfw_set {enabled} server`\n"
+                      f"**Effect:** {status_text.title()}s NSFW for **all channels** in this server\n"
+                      f"*(Requires admin permissions)*",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="⚠️ NSFW Warning",
+                value="NSFW mode allows: profanities, dark themes, obscene jokes, adult content, "
+                      "controversial opinions, and gore. Only enable if all users are adults.",
+                inline=False
+            )
+            
+            embed.set_footer(text="⚠️ Please run the command again with your chosen scope")
+            await interaction.followup.send(embed=embed)
+            return
+        
+        # Validate scope
+        scope = scope.lower()
+        if scope not in ["channel", "server"]:
+            await interaction.followup.send(f"❌ **Invalid scope!**\n\n"
+                                           f"**Valid scopes:** `channel` or `server`\n\n"
+                                           f"**Examples:**\n"
+                                           f"• `/nsfw_set {enabled} channel` - Set for this channel only\n"
+                                           f"• `/nsfw_set {enabled} server` - Set for entire server (Admin only)")
+            return
+        
+        status = "enabled" if enabled else "disabled"
+        emoji = "🔞" if enabled else "✅"
+        
+        if scope == "channel":
+            # For now, channel-specific NSFW isn't implemented, use server-wide
+            await interaction.followup.send("⚠️ **Channel-specific NSFW not yet implemented.**\n\n"
+                                           "NSFW settings currently apply server-wide only.\n"
+                                           f"Use `/nsfw_set {enabled} server` instead.")
+            return
+        
+        elif scope == "server":
+            # Check admin permissions for server-wide changes
+            if not check_admin_permissions(interaction):
+                await interaction.followup.send(f"❌ **Administrator permissions required!**\n\n"
+                                               f"You need administrator permissions to change server NSFW settings.")
+                return
+            
+            # Set server NSFW setting
+            guild_nsfw_settings[interaction.guild.id] = enabled
+            save_json_data(NSFW_SETTINGS_FILE, guild_nsfw_settings)
+            
+            await interaction.followup.send(f"{emoji} **NSFW content {status} for this server!**\n\n"
+                                          f"🏰 This applies to all channels in the server.\n"
+                                          f"🎭 Use `/format_set` to choose your conversation style.\n"
+                                          f"💾 This setting is saved and will persist between bot restarts!")
+
+@tree.command(name="nsfw_info", description="Show current NSFW settings")
+async def nsfw_info(interaction: discord.Interaction):
+    """Show current NSFW settings for this context"""
+    await interaction.response.defer(ephemeral=True)
+    
+    is_dm = isinstance(interaction.channel, discord.DMChannel)
+    
+    if is_dm:
+        current_setting = dm_nsfw_settings.get(interaction.user.id, False)
+        title_prefix = "🔒 DM"
+        scope_text = "your DMs"
+    else:
+        current_setting = guild_nsfw_settings.get(interaction.guild.id, False)
+        title_prefix = "📢 Server"
+        scope_text = f"**{interaction.guild.name}**"
+    
+    status = "Enabled 🔞" if current_setting else "Disabled ✅"
+    color = 0xff4444 if current_setting else 0x00ff00
+    
+    embed = discord.Embed(
+        title=f"🔞 {title_prefix} NSFW Settings",
+        description=f"NSFW content for {scope_text}: **{status}**",
+        color=color
+    )
+    
+    if current_setting:
+        embed.add_field(
+            name="🔞 NSFW Content Enabled",
+            value="The bot can use profanities, dark themes, obscene jokes, "
+                  "adult content, controversial opinions, and gore.",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="✅ Safe Content Only",
+            value="The bot will maintain appropriate, family-friendly content.",
+            inline=False
+        )
+    
+    embed.add_field(
+        name="💡 How to Change",
+        value=f"Use `/nsfw_set true` to enable or `/nsfw_set false` to disable NSFW content.\n"
+              f"{'In servers, add `server` scope for server-wide changes.' if not is_dm else ''}",
+        inline=False
+    )
+    
+    embed.set_footer(text="NSFW settings work with all conversation styles")
+    await interaction.followup.send(embed=embed)
+
+# PERSONALITY COMMANDS
+@tree.command(name="prompt_set", description="Set conversation style with automatic DM/server detection and scope options")
+@app_commands.describe(
+    style="Choose your conversation style",
+    scope="Server scope (channel/server) - only for servers, not DMs"
+)
+async def prompt_set(
+    interaction: discord.Interaction,
+    style: str,
+    scope: str = None
+):
     """Set conversation style with automatic DM/server detection and scope options"""
     await interaction.response.defer(ephemeral=True)
     
@@ -4588,7 +4863,7 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
     style = style.lower()
     
     # Get valid styles (built-in + custom)
-    valid_styles = ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]
+    valid_styles = ["conversational", "asterisk", "narrative"]
     
     # Add custom prompts for this server
     custom_prompts_list = []
@@ -4598,7 +4873,7 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
     
     # Check if style is valid
     if style not in valid_styles:
-        available_list = ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]
+        available_list = ["conversational", "asterisk", "narrative"]
         if custom_prompts_list:
             available_list.extend([f"`{name}` (custom)" for name in custom_prompts_list])
         
@@ -4611,10 +4886,7 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
     style_descriptions = {
         "conversational": "Normal Discord chat (no roleplay actions)",
         "asterisk": "Roleplay with *action descriptions*",
-        "narrative": "Rich, story-driven narrative roleplay",
-        "conversational nsfw": "Conversational NSFW",
-        "asterisk nsfw": "Asterisk NSFW",
-        "narrative nsfw": "Narrative NSFW"
+        "narrative": "Rich, story-driven narrative roleplay"
     }
     
     # Get description for custom prompts
@@ -4636,7 +4908,7 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
         custom_prompt_found = None
         shared_servers_with_prompt = []
         
-        if style not in ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]:
+        if style not in ["conversational", "asterisk", "narrative"]:
             # Check all shared servers for this custom prompt
             for guild in client.guilds:
                 # Check if user is in this guild
@@ -4675,7 +4947,7 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
                 else:
                     error_msg += "No custom prompts found in your shared servers."
                 
-                error_msg += f"\n\n**Built-in styles:** conversational, asterisk, narrative (+ nsfw versions)"
+                error_msg += f"\n\n**Built-in styles:** conversational, asterisk, narrative"
                 
                 await interaction.followup.send(error_msg)
                 return
@@ -4779,8 +5051,8 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
                 return
             
             # Set server default and save to persistent storage
-            server_prompt_defaults[interaction.guild.id] = style
-            save_json_data(SERVER_PROMPT_DEFAULTS_FILE, server_prompt_defaults)
+            server_format_defaults[interaction.guild.id] = style
+            save_json_data(SERVER_FORMAT_DEFAULTS_FILE, server_format_defaults)
             
             success_msg = f"✅ **Server default conversation style set to {style.title()}!**\n" \
                          f"**Description:** {style_description}\n\n" \
@@ -4798,63 +5070,7 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
             
             await interaction.followup.send(success_msg)
 
-@set_prompt_style.autocomplete('style')
-async def style_autocomplete(interaction: discord.Interaction, current: str):
-    """Autocomplete for conversation styles including custom prompts"""
-    # Built-in styles
-    built_in_styles = ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]
-    choices = []
-    
-    # Add built-in styles
-    for style in built_in_styles:
-        if current.lower() in style.lower():
-            choices.append(app_commands.Choice(name=style.title(), value=style))
-    
-    # Add custom prompts
-    if isinstance(interaction.channel, discord.DMChannel):
-        # DM: Show custom prompts from all shared servers
-        seen_prompts = set()
-        for guild in client.guilds:
-            # Check if user is in this guild
-            member = guild.get_member(interaction.user.id)
-            if not member:
-                try:
-                    member = await guild.fetch_member(interaction.user.id)
-                except (discord.NotFound, discord.Forbidden):
-                    continue
-            
-            if member and guild.id in custom_prompts:
-                for prompt_name, prompt_data in custom_prompts[guild.id].items():
-                    if (prompt_name not in seen_prompts and 
-                        (current.lower() in prompt_name.lower() or current.lower() in prompt_data["name"].lower())):
-                        
-                        nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-                        display_name = f"{prompt_data['name']}{nsfw_marker} (from {guild.name})"
-                        choices.append(app_commands.Choice(name=display_name, value=prompt_name))
-                        seen_prompts.add(prompt_name)
-    else:
-        # Server: Show custom prompts for this guild only
-        if interaction.guild and interaction.guild.id in custom_prompts:
-            for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
-                if current.lower() in prompt_name.lower() or current.lower() in prompt_data["name"].lower():
-                    nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-                    display_name = f"{prompt_data['name']}{nsfw_marker} (Custom)"
-                    choices.append(app_commands.Choice(name=display_name, value=prompt_name))
-    
-    return choices[:25]  # Discord limits to 25 choices
-
-@set_prompt_style.autocomplete('scope')
-async def scope_autocomplete(interaction: discord.Interaction, current: str):
-    """Autocomplete for prompt scope"""
-    # Only show scope options for servers (not DMs)
-    if isinstance(interaction.channel, discord.DMChannel):
-        return []
-    
-    scopes = ["channel", "server"]
-    return [app_commands.Choice(name=scope.title(), value=scope) for scope in scopes if current.lower() in scope.lower()]
-
-@tree.command(name="prompt_info", description="Show the current conversation style for this channel or DM")
-async def show_prompt_info(interaction: discord.Interaction):
+# PERSONALITY COMMANDS
     """Display current prompt style and available options with improved server/channel detection"""
     await interaction.response.defer(ephemeral=True)
     
@@ -4870,7 +5086,7 @@ async def show_prompt_info(interaction: discord.Interaction):
         custom_prompt_servers = []
         custom_data = None  # Initialize this variable
         
-        if current_style not in ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]:
+        if current_style not in ["conversational", "asterisk", "narrative"]:
             # Check shared servers for this custom prompt
             for guild in client.guilds:
                 member = guild.get_member(interaction.user.id)
@@ -4899,7 +5115,7 @@ async def show_prompt_info(interaction: discord.Interaction):
             style_source = f"Channel-specific (#{interaction.channel.name})"
         else:
             # Check for persistent server default
-            server_style = server_prompt_defaults.get(interaction.guild.id)
+            server_style = server_format_defaults.get(interaction.guild.id)
             
             if server_style:
                 current_style = server_style
@@ -4939,7 +5155,7 @@ async def show_prompt_info(interaction: discord.Interaction):
         value="**Conversational** - Normal Discord chat\n"
               "**Asterisk** - Roleplay with *actions*\n"
               "**Narrative** - Rich storytelling\n"
-              "**+ NSFW versions** of each style",
+              "*(Use /nsfw_set to enable adult content)*",
         inline=False
     )
     
