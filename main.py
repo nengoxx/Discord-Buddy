@@ -736,19 +736,19 @@ class AIProviderManager:
             return "❌ No AI provider is configured. Please contact the bot administrator to set up API keys."
         
         # ========== PROVIDER DEBUG LOGGING ==========
-        print(f"\n🔌 PROVIDER MANAGER DEBUG:", flush=True)
-        print(f"   Provider: {provider_name}", flush=True)
-        print(f"   Model: {model_name}", flush=True)
-        print(f"   Max Tokens: {max_tokens}", flush=True)
-        print(f"   Messages to send: {len(messages)}", flush=True)
+        print(f"\n🔌 PROVIDER MANAGER DEBUG:")
+        print(f"   Provider: {provider_name}")
+        print(f"   Model: {model_name}")
+        print(f"   Max Tokens: {max_tokens}")
+        print(f"   Messages to send: {len(messages)}")
         
         # Log the exact payload being sent to provider
         if provider_name == "custom":
             url_guild_id = dm_server_selection.get(user_id) if is_dm and user_id in dm_server_selection else guild_id
             custom_url = self.get_guild_custom_url(url_guild_id) if url_guild_id else "http://localhost:1234/v1"
-            print(f"   Custom URL: {custom_url}", flush=True)
+            print(f"   Custom URL: {custom_url}")
         
-        print("   📦 Sending to AI provider...", flush=True)
+        print("   📦 Sending to AI provider...")
         # ========== END PROVIDER DEBUG LOGGING ==========
 
         # Handle custom provider with cached instances
@@ -1911,7 +1911,7 @@ def get_guild_emojis(guild: discord.Guild) -> str:
         selected_emojis.sort(key=lambda e: e.name.lower())
         
         # Format them in simple :name: format
-        emoji_list = ', '.join([f":{emoji.name}:" for emoji in selected_emojis])
+        emoji_list = ' '.join([f":{emoji.name}:" for emoji in selected_emojis])
         
         return f"\n\n<emojis>Available custom emojis for this server:\n{emoji_list}\nTEMPLATE: When using custom emojis follow the exact format of :emoji: in your responses, otherwise they won't work! Limit their usage.\nREACTIONS: You can also react to the users' messages with emojis! To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] or [REACT: :custom_emoji:]. Occasionally, react to show emotion, agreement, humor, or acknowledgment.</emojis>"
     return ""
@@ -1971,7 +1971,7 @@ def get_guild_emoji_list(guild: discord.Guild) -> str:
     # Format them in simple :name: format
     emoji_count = len(selected_emojis)
     total_count = len(available_emojis)
-    emoji_list = ', '.join([f":{emoji.name}:" for emoji in selected_emojis])
+    emoji_list = ' '.join([f":{emoji.name}:" for emoji in selected_emojis])
     
     # Add a note if we're showing a subset
     if emoji_count < total_count:
@@ -2718,7 +2718,18 @@ def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = N
         persona_description = DEFAULT_PERSONALITIES["default"]["prompt"]
 
     # Build the new Anthropic-style system prompt
-    location_text = "on the server's name" if not is_dm else "via direct messages"
+    if not is_dm and guild:
+        # Get channel name for location text
+        channel_name = "unknown-channel"
+        if channel_id:
+            channel_obj = guild.get_channel(channel_id)
+            if channel_obj:
+                channel_name = channel_obj.name
+        location_text = f"on {guild.name} in the {channel_name} channel"
+    elif not is_dm:
+        location_text = "on the server"
+    else:
+        location_text = "via direct messages"
     
     # Check for NSFW setting
     nsfw_enabled = False
@@ -2819,7 +2830,6 @@ Here is the conversation history (between the users and you). It could be empty 
             
             if lore_entries:
                 lore_content = "\n".join(lore_entries)
-                lore_content += f"\nChannel: You are currently chatting in the {channel_name} channel on the {guild_obj.name} server."
     elif is_dm and user_id:
         # DM lore - personal info about the user
         user_lore = lore_book.get_dm_entry(user_id)
@@ -2853,7 +2863,7 @@ def split_message_by_newlines(message: str) -> List[str]:
 
 async def generate_response(channel_id: int, user_message: str, guild: discord.Guild = None, attachments: List[discord.Attachment] = None, user_name: str = None, is_dm: bool = False, user_id: int = None, original_message: discord.Message = None) -> str:
     """Generate response using the AI Provider Manager"""
-    print(f"🔍 DEBUG: generate_response called with channel_id={channel_id}, is_dm={is_dm}, user_id={user_id}", flush=True)
+    print(f"🔍 DEBUG: generate_response called with channel_id={channel_id}, is_dm={is_dm}, user_id={user_id}")
     try:
         guild_id = guild.id if guild else None
 
@@ -2990,9 +3000,9 @@ You can mention a specific user by including <@user_id> in your response, but on
 
 {format_instructions}"""})
 
-        print(f"🔍 DEBUG: About to print main debug logging...", flush=True)
-        print("🔍 DEBUG: ENTERING DEBUG LOGGING SECTION", flush=True)
-        print("🔍 DEBUG: Starting debug logging section...", flush=True)
+        print(f"🔍 DEBUG: About to print main debug logging...")
+        print("🔍 DEBUG: ENTERING DEBUG LOGGING SECTION")
+        print("🔍 DEBUG: Starting debug logging section...")
         # ========== DEBUG LOGGING ==========
         # Get current provider and model settings for logging
         debug_provider = "unknown"
@@ -3032,17 +3042,15 @@ You can mention a specific user by including <@user_id> in your response, but on
         for i, msg in enumerate(history):
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
-            # Truncate long content for readability
-            display_content = content if len(content) <= 200 else content[:200] + "...[TRUNCATED]"
-            print(f"[{i+1}] {role.upper()}: {display_content}")
+            print(f"[{i+1}] {role.upper()}: {content}")
             
         print("\n🔧 FORMAT INSTRUCTIONS:")
         print("-" * 40)
         print(format_instructions)
         print("="*80)
         # ========== END DEBUG LOGGING ==========
-        print("🔍 DEBUG: EXITED DEBUG LOGGING SECTION", flush=True)
-        print("🔍 DEBUG: Debug logging section completed, about to call ai_manager...", flush=True)
+        print("🔍 DEBUG: EXITED DEBUG LOGGING SECTION")
+        print("🔍 DEBUG: Debug logging section completed, about to call ai_manager...")
 
         bot_response = await ai_manager.generate_response(
             messages=history,
