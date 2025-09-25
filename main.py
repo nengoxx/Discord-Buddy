@@ -1576,9 +1576,13 @@ class RequestQueue:
         except Exception as e:
             print(f"Error processing request: {e}")
             try:
-                return f"❌ Sorry, I encountered an error processing your request: {str(e)}"
+                error_msg = f"❌ Sorry, I encountered an error processing your request: {str(e)}"
+                # Truncate error message to stay under Discord's 4000 character limit
+                if len(error_msg) > 3950:  # Leave some buffer
+                    error_msg = error_msg[:3950] + "..."
+                return error_msg
             except Exception:
-                pass
+                return "❌ Sorry, I encountered an error processing your request."
 
 # Initialize the request queue
 request_queue = RequestQueue()
@@ -2415,7 +2419,7 @@ async def get_bot_last_logical_message(channel) -> Tuple[List[discord.Message], 
     except Exception:
         return [], ""
 
-async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None, process_images: bool = True) -> str:
+async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None, process_images: bool = True, reply_to: str = None) -> str:
     """Add a message to conversation history with proper formatting and image support"""
     # print(f"DEBUG: add_to_history called with role={role}, content={repr(content)}, user_name={repr(user_name)}, user_id={user_id}, guild_id={guild_id}")
     if channel_id not in conversations:
@@ -2450,17 +2454,26 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
    # Format user messages (including other bots treated as users)
     if role == "user" and user_name:
         if is_dm:
-            formatted_content = content
+            if reply_to:
+                formatted_content = f"[Replying to {reply_to}] {content}"
+            else:
+                formatted_content = content
         else:
             if is_other_bot:
                 # For other bots, append all their messages to history as sent by the user
                 # Convert any bot mentions to display names for clarity
                 clean_content = convert_bot_mentions_to_names(content, guild_obj) if guild_id else content
-                formatted_content = f"{user_name}: {clean_content}"
+                if reply_to:
+                    formatted_content = f"{user_name}: [Replying to {reply_to}] {clean_content}"
+                else:
+                    formatted_content = f"{user_name}: {clean_content}"
             else:
                 # Convert bot mentions to display names for better readability
                 clean_content = convert_bot_mentions_to_names(content, guild_obj) if guild_id else content
-                formatted_content = f"{user_name}: {clean_content}"
+                if reply_to:
+                    formatted_content = f"{user_name}: [Replying to {reply_to}] {clean_content}"
+                else:
+                    formatted_content = f"{user_name}: {clean_content}"
     else:
         # For assistant messages, format with bot's persona name
         bot_name = get_bot_persona_name(guild_id, user_id, not guild_id)
@@ -3138,6 +3151,17 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                 # Remove the special instruction from the user message, keep the command usage
                 user_message = re.sub(r'\s*\[SPECIAL INSTRUCTION\]:\s*.+', '', user_message).strip()
 
+        # Extract reply information from the original message
+        reply_to_name = None
+        if original_message and original_message.reference and original_message.reference.resolved:
+            replied_message = original_message.reference.resolved
+            if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
+                reply_to_name = replied_message.author.display_name
+            elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
+                reply_to_name = replied_message.author.global_name
+            else:
+                reply_to_name = replied_message.author.name
+
         if use_full_history:
             try:
                 # Load all DM history (this already adds the current message to history)
@@ -3151,11 +3175,11 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             except Exception as e:
                 print(f"Error loading full DM history: {e}")
                 # If full history loading fails, fall back to regular behavior
-                message_content = await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
+                message_content = await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name, reply_to=reply_to_name)
                 history = get_conversation_history(channel_id)
         else:
             # Regular conversation history - ADD the user message first
-            message_content = await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
+            message_content = await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name, reply_to=reply_to_name)
             history = get_conversation_history(channel_id)
 
         # Create a COPY of the history for this response generation (don't modify the permanent history)
@@ -3379,7 +3403,11 @@ You can mention a specific user by including <@user_id> in your response, but on
         return bot_response
     except Exception as e:
         print(f"Error in generate_response: {e}")
-        return f"Sorry, I encountered an error: {str(e)}"
+        error_msg = f"Sorry, I encountered an error: {str(e)}"
+        # Truncate error message to stay under Discord's 4000 character limit
+        if len(error_msg) > 3950:  # Leave some buffer
+            error_msg = error_msg[:3950] + "..."
+        return error_msg
 
 async def generate_memory_summary(channel_id: int, num_messages: int, guild: discord.Guild = None, user_id: int = None, username: str = None) -> str:
     """Generate memory summary from recent conversation history"""
@@ -3867,6 +3895,17 @@ async def on_message(message: discord.Message):
     else:
         user_name = message.author.name
 
+    # Check if this message is a reply to another message
+    reply_to_name = None
+    if message.reference and message.reference.resolved:
+        replied_message = message.reference.resolved
+        if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
+            reply_to_name = replied_message.author.display_name
+        elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
+            reply_to_name = replied_message.author.global_name
+        else:
+            reply_to_name = replied_message.author.name
+
     guild_id = message.guild.id if message.guild else None
 
     # Update DM interaction tracking (only for real users, not other bots)
@@ -3960,7 +3999,8 @@ async def on_message(message: discord.Message):
                 message.author.id, 
                 guild_id, 
                 message.attachments if not is_other_bot else [], 
-                user_name
+                user_name,
+                reply_to=reply_to_name
             )
 
 async def check_up_task():
