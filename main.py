@@ -1331,7 +1331,7 @@ class RequestQueue:
                         guild: discord.Guild, attachments: List[discord.Attachment],
                         user_name: str, is_dm: bool, user_id: int) -> bool:
         """Add a request to the queue. Returns True if added, False if duplicate/spam"""
-        print(f"DEBUG: add_request called for channel {channel_id}, content={repr(content)}")
+        # print(f"DEBUG: add_request called for channel {channel_id}, content={repr(content)}")
         
         async with self.locks[channel_id]:
             # Check for recent duplicate requests from same user (spam prevention)
@@ -1395,7 +1395,7 @@ class RequestQueue:
     
     async def _process_single_request(self, channel_id: int, request: dict):
         """Process a single request with proper context"""
-        print(f"DEBUG: _process_single_request called for channel {channel_id}, content={repr(request.get('content'))}")
+        # print(f"DEBUG: _process_single_request called for channel {channel_id}, content={repr(request.get('content'))}")
         try:
             message = request['message']
             content = request['content']
@@ -2315,7 +2315,7 @@ async def get_bot_last_logical_message(channel) -> Tuple[List[discord.Message], 
 
 async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None):
     """Add a message to conversation history with proper formatting and image support"""
-    print(f"DEBUG: add_to_history called with role={role}, content={repr(content)}, user_name={repr(user_name)}, user_id={user_id}, guild_id={guild_id}")
+    # print(f"DEBUG: add_to_history called with role={role}, content={repr(content)}, user_name={repr(user_name)}, user_id={user_id}, guild_id={guild_id}")
     if channel_id not in conversations:
         conversations[channel_id] = []
 
@@ -2598,7 +2598,7 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
             content = message.content.strip()
             
             # DEBUG: Log message content when loading from history
-            print(f"DEBUG: Loading message from {message.author.display_name} in history: {repr(content)}")
+            # print(f"DEBUG: Loading message from {message.author.display_name} in history: {repr(content)}")
             
             if message.author == client.user:
                 # Bot message
@@ -2896,7 +2896,7 @@ def split_message_by_newlines(message: str) -> List[str]:
 
 async def generate_response(channel_id: int, user_message: str, guild: discord.Guild = None, attachments: List[discord.Attachment] = None, user_name: str = None, is_dm: bool = False, user_id: int = None, original_message: discord.Message = None) -> str:
     """Generate response using the AI Provider Manager"""
-    print(f"DEBUG: generate_response called with user_message: {repr(user_message)}")
+    # print(f"DEBUG: generate_response called with user_message: {repr(user_message)}")
     try:
         guild_id = guild.id if guild else None
 
@@ -2930,10 +2930,11 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                 # Load all DM history (this already adds the current message to history)
                 full_history = await load_all_dm_history(original_message.channel, user_id, guild)
                 history = get_conversation_history(channel_id)
-                print(f"DEBUG: After loading full history, history has {len(history)} messages")
+                # print(f"DEBUG: After loading full history, history has {len(history)} messages")
                 for i, msg in enumerate(history):
-                    print(f"DEBUG: History[{i}]: {msg['role']} - {repr(msg['content'])}")
-                    
+                    # print(f"DEBUG: History[{i}]: {msg['role']} - {repr(msg['content'])}")
+                    pass
+
             except Exception as e:
                 print(f"Error loading full DM history: {e}")
                 # If full history loading fails, fall back to regular behavior
@@ -3554,7 +3555,7 @@ async def on_message(message: discord.Message):
         return
     
     # DEBUG: Log raw message content to investigate duplication
-    print(f"DEBUG: Received message from {message.author.display_name} in {'DM' if isinstance(message.channel, discord.DMChannel) else 'channel'}: {repr(message.content)}")
+    # print(f"DEBUG: Received message from {message.author.display_name} in {'DM' if isinstance(message.channel, discord.DMChannel) else 'channel'}: {repr(message.content)}")
     
     is_dm = isinstance(message.channel, discord.DMChannel)
 
