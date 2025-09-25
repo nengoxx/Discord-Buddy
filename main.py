@@ -2909,6 +2909,9 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
             history = get_conversation_history(channel_id)
 
+        # Create a COPY of the history for this response generation (don't modify the permanent history)
+        history = history.copy()
+
         # Get system prompt with username for DMs
         system_prompt = get_system_prompt(guild_id, guild, user_message, channel_id, is_dm, user_id, user_name, history)
 
