@@ -1451,6 +1451,14 @@ class RequestQueue:
                 if bot_response and guild:
                     bot_response = clean_malformed_emojis(bot_response, guild)
 
+                # CLEAN EM-DASHES (after emojis are cleaned)
+                if bot_response:
+                    bot_response = clean_em_dashes(bot_response)
+
+                # CLEAN BOT NAME PREFIX (remove persona name from output)
+                if bot_response:
+                    bot_response = clean_bot_name_prefix(bot_response, guild.id if guild else None, user_id, is_dm)
+
                 # Assistant response is already added to history in generate_response()
                 
                 # Finally sanitize user mentions
@@ -1724,6 +1732,49 @@ def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     cleaned_text = '\n'.join(cleaned_lines)
     
     return cleaned_text
+
+def clean_em_dashes(text: str) -> str:
+    """Replace em-dashes with appropriate punctuation based on context.
+    
+    - Mid-sentence em-dashes (text before and after) become ", "
+    - End-sentence em-dashes (text before, nothing after) become "-"
+    """
+    if not text:
+        return text
+    
+    # Pattern for em-dash with text before and after (mid-sentence)
+    # Lookbehind: non-whitespace character before em-dash
+    # Lookahead: non-whitespace character after em-dash
+    mid_sentence_pattern = r'(?<=\S)—(?=\S)'
+    
+    # Replace mid-sentence em-dashes with ", "
+    text = re.sub(mid_sentence_pattern, ", ", text)
+    
+    # Pattern for em-dash at end of sentence (text before, but nothing after except whitespace/punctuation)
+    # Lookbehind: non-whitespace character before em-dash
+    # Lookahead: whitespace, punctuation, or end of string
+    end_sentence_pattern = r'(?<=\S)—(?=\s|$|[.!?])'
+    
+    # Replace end-sentence em-dashes with "-"
+    text = re.sub(end_sentence_pattern, "-", text)
+    
+    return text
+
+def clean_bot_name_prefix(text: str, guild_id: int = None, user_id: int = None, is_dm: bool = False) -> str:
+    """Remove bot persona name prefix from the response text before sending to Discord"""
+    if not text:
+        return text
+    
+    # Get the bot's persona name
+    bot_name = get_bot_persona_name(guild_id, user_id, is_dm)
+    
+    # Remove the prefix if it exists
+    if text.startswith(f"{bot_name}: "):
+        return text[len(f"{bot_name}: "):]
+    elif text.startswith(f"{bot_name}:"):
+        return text[len(f"{bot_name}:"):]
+    
+    return text
 
 def save_custom_prompts():
     """Save custom prompts to file"""
@@ -2840,7 +2891,7 @@ Here is the conversation history (between the users and you):
                 memory_content = "\n".join([mem["memory"] for mem in relevant_memories])
     
     if not memory_content:
-        memory_content = "No relevant memories found."
+        memory_content = "No relevant memory found."
 
     # Add lorebook entries and channel context
     lore_content = ""
