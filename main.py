@@ -143,7 +143,18 @@ class ClaudeProvider(AIProvider):
                 messages=messages,
                 stream=False
             )
-            return response.content[0].text
+            
+            response_text = response.content[0].text
+            
+            # Check if the response contains proxy or API errors
+            if any(error_indicator in response_text.lower() for error_indicator in [
+                "proxy error", "upstream connect error", "connection termination", 
+                "service unavailable", "context size limit", "request validation failed",
+                "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+            ]):
+                return f"❌ Claude API error: {response_text}"
+            
+            return response_text
         except Exception as e:
             return f"❌ Claude API error: {str(e)}"
     
@@ -241,6 +252,13 @@ class GeminiProvider(AIProvider):
             )
             
             if hasattr(response, 'text') and response.text:
+                # Check if the response contains proxy or API errors
+                if any(error_indicator in response.text.lower() for error_indicator in [
+                    "proxy error", "upstream connect error", "connection termination", 
+                    "service unavailable", "context size limit", "request validation failed",
+                    "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+                ]):
+                    return f"❌ Gemini API error: {response.text}"
                 return response.text
             elif hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
@@ -251,7 +269,15 @@ class GeminiProvider(AIProvider):
                             if hasattr(part, 'text'):
                                 text_parts.append(part.text)
                         if text_parts:
-                            return "".join(text_parts)
+                            response_text = "".join(text_parts)
+                            # Check if the response contains proxy or API errors
+                            if any(error_indicator in response_text.lower() for error_indicator in [
+                                "proxy error", "upstream connect error", "connection termination", 
+                                "service unavailable", "context size limit", "request validation failed",
+                                "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+                            ]):
+                                return f"❌ Gemini API error: {response_text}"
+                            return response_text
                             
                 if hasattr(candidate, 'finish_reason'):
                     if candidate.finish_reason == "SAFETY":
@@ -360,7 +386,17 @@ class OpenAIProvider(AIProvider):
                 stream=False
             )
             
-            return response.choices[0].message.content
+            response_text = response.choices[0].message.content
+            
+            # Check if the response contains proxy or API errors
+            if any(error_indicator in response_text.lower() for error_indicator in [
+                "proxy error", "upstream connect error", "connection termination", 
+                "service unavailable", "context size limit", "request validation failed",
+                "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+            ]):
+                return f"❌ OpenAI API error: {response_text}"
+            
+            return response_text
             
         except Exception as e:
             return f"❌ OpenAI API error: {str(e)}"
@@ -619,7 +655,18 @@ class CustomProvider(AIProvider):
                 max_tokens=max_tokens,
                 stream=False
             )
-            return response.choices[0].message.content
+            
+            response_text = response.choices[0].message.content
+            
+            # Check if the response contains proxy or API errors
+            if any(error_indicator in response_text.lower() for error_indicator in [
+                "proxy error", "upstream connect error", "connection termination", 
+                "service unavailable", "context size limit", "request validation failed",
+                "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+            ]):
+                return f"❌ Custom API error: {response_text}"
+            
+            return response_text
         
         except Exception as e:
             return f"❌ Custom API error: {str(e)}"
@@ -1436,8 +1483,7 @@ class RequestQueue:
                     original_message=message
                 )
 
-                if bot_response and bot_response.startswith("❌"):
-                    await send_dismissible_error(message.channel, message.author, bot_response)
+                if bot_response is None:
                     return
 
                 # STORE THE ORIGINAL RESPONSE WITH REACTIONS FOR HISTORY
@@ -1474,17 +1520,17 @@ class RequestQueue:
                 sent_messages = []
                 if len(message_parts) > 1:
                     for part in message_parts:
-                        if len(part) > 2000:
-                            for i in range(0, len(part), 2000):
-                                sent_msg = await message.channel.send(part[i:i+2000])
+                        if len(part) > 4000:
+                            for i in range(0, len(part), 4000):
+                                sent_msg = await message.channel.send(part[i:i+4000])
                                 sent_messages.append(sent_msg)
                         else:
                             sent_msg = await message.channel.send(part)
                             sent_messages.append(sent_msg)
                 elif bot_response:
-                    if len(bot_response) > 2000:
-                        for i in range(0, len(bot_response), 2000):
-                            sent_msg = await message.channel.send(bot_response[i:i+2000])
+                    if len(bot_response) > 4000:
+                        for i in range(0, len(bot_response), 4000):
+                            sent_msg = await message.channel.send(bot_response[i:i+4000])
                             sent_messages.append(sent_msg)
                     else:
                         sent_msg = await message.channel.send(bot_response)
@@ -2364,7 +2410,7 @@ async def get_bot_last_logical_message(channel) -> Tuple[List[discord.Message], 
     except Exception:
         return [], ""
 
-async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None):
+async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None) -> str:
     """Add a message to conversation history with proper formatting and image support"""
     # print(f"DEBUG: add_to_history called with role={role}, content={repr(content)}, user_name={repr(user_name)}, user_id={user_id}, guild_id={guild_id}")
     if channel_id not in conversations:
@@ -2580,10 +2626,30 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
                 conversations[channel_id][-1]["content"] = existing_content + f"\n{message_content}"
         else:
             # Don't group if previous message has complex content
-            conversations[channel_id].append({"role": role, "content": message_content})
+            # Ensure we store text-only in history
+            if isinstance(message_content, list):
+                text_content = ""
+                for part in message_content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_content += part.get("text", "")
+                    elif isinstance(part, str):
+                        text_content += part
+            else:
+                text_content = message_content
+            conversations[channel_id].append({"role": role, "content": text_content})
     else:
         # Create new message entry
-        conversations[channel_id].append({"role": role, "content": message_content})
+        # Ensure we store text-only in history
+        if isinstance(message_content, list):
+            text_content = ""
+            for part in message_content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_content += part.get("text", "")
+                elif isinstance(part, str):
+                    text_content += part
+        else:
+            text_content = message_content
+        conversations[channel_id].append({"role": role, "content": text_content})
 
     # Maintain history length limit
     if is_dm:
@@ -2599,6 +2665,8 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
 
     if len(conversations[channel_id]) > max_history:
         conversations[channel_id] = conversations[channel_id][-max_history:]
+
+    return message_content
 
 async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = None) -> List[Dict]:
     """Load all messages from DM channel history and format them properly"""
@@ -2999,15 +3067,19 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             except Exception as e:
                 print(f"Error loading full DM history: {e}")
                 # If full history loading fails, fall back to regular behavior
-                await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
+                message_content = await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
                 history = get_conversation_history(channel_id)
         else:
             # Regular conversation history - ADD the user message first
-            await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
+            message_content = await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
             history = get_conversation_history(channel_id)
 
         # Create a COPY of the history for this response generation (don't modify the permanent history)
         history = history.copy()
+
+        # Replace the last message content with the actual content (may be complex)
+        if history and history[-1].get("role") == "user":
+            history[-1]["content"] = message_content
 
         # Get system prompt with username for DMs
         system_prompt = get_system_prompt(guild_id, guild, user_message, channel_id, is_dm, user_id, user_name, history)
@@ -3050,22 +3122,6 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                         last_message["content"] = last_message["content"][:max_content_length] + " [Message truncated due to size limit]"
                         print(f"Truncated message content from {original_length} to {max_content_length} chars")
 
-        # Get the last user message for the <message> section
-        last_user_message = ""
-        if history:
-            for msg in reversed(history):
-                if msg.get("role") == "user":
-                    last_user_message = msg.get("content", "")
-                    break
-        
-        if not last_user_message:
-            last_user_message = user_message
-
-        # Remove the last user message from history if there are multiple messages
-        # (it will only appear in the <message> section)
-        if len(history) > 1 and history and history[-1].get("role") == "user":
-            history.pop()  # Remove the last message if it's a user message and we have multiple messages
-
         # Get format-specific instructions
         format_instructions = ""
         format_style = "conversational"
@@ -3088,11 +3144,6 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
 
         # Append the system messages to complete the structure
         system_message_content = f"""</history>
-
-Here is the last message in the conversation:
-<message>
-{last_user_message}
-</message>
 
 How do you respond in the chat?
 
@@ -3164,13 +3215,30 @@ You can mention a specific user by including <@user_id> in your response, but on
         print("="*80)
         # ========== END RESPONSE DEBUG LOGGING ==========
 
-        # Check if the response is an error message
-        if bot_response and bot_response.startswith("❌"):
+        # Check if the response is an error message (API errors or proxy errors)
+        is_error_response = False
+        if bot_response:
+            # Check for standard API errors (start with ❌)
+            if bot_response.startswith("❌"):
+                is_error_response = True
+            # Check for proxy errors
+            elif "Proxy error" in bot_response:
+                is_error_response = True
+            # Check for other common error patterns that should be ethereal
+            elif any(error_indicator in bot_response.lower() for error_indicator in [
+                "upstream connect error", "connection termination", "service unavailable",
+                "context size limit", "request validation failed", "tokens.*exceeds",
+                "http 503", "http 400", "http 429", "rate limit", "timeout"
+            ]):
+                is_error_response = True
+        
+        if is_error_response:
             if original_message:
                 await send_dismissible_error(original_message.channel, original_message.author, bot_response)
                 return None
             else:
-                return bot_response
+                # For cases without original_message, still don't add to history but return None
+                return None
 
         # Clean malformed emojis
         if bot_response and guild:
@@ -3435,7 +3503,10 @@ async def send_dismissible_error(channel, user, error_message):
             
     except Exception:
         # Fallback: send regular message that auto-deletes
-        error_msg = await channel.send(f"⚠️ {error_message}")
+        if len(error_message) > 4000:
+            error_msg = await channel.send(f"⚠️ {error_message[:3997]}...")
+        else:
+            error_msg = await channel.send(f"⚠️ {error_message}")
         await asyncio.sleep(10)
         try:
             await error_msg.delete()
@@ -3836,8 +3907,12 @@ async def check_up_task():
                         )
                         
                         # Send the check-up message
-                        if response and not response.startswith("❌"):
-                            await dm_channel.send(response)
+                        if response:
+                            if len(response) > 4000:
+                                for i in range(0, len(response), 4000):
+                                    await dm_channel.send(response[i:i+4000])
+                            else:
+                                await dm_channel.send(response)
                             dm_manager.mark_check_up_sent(user_id)
                         
                         # Small delay to avoid rate limits
@@ -3854,11 +3929,13 @@ async def check_up_task():
 
 async def send_fun_command_response(interaction: discord.Interaction, response: str):
     """Helper function to clean and send fun command responses"""
-    if response:
-        # Check for error responses and use dismissible error handler
-        if response.startswith("❌"):
-            await send_dismissible_error(interaction.channel, interaction.user, response)
-            return
+    if response is None:
+        return
+        
+    # Check for error responses and use dismissible error handler
+    if response.startswith("❌"):
+        await send_dismissible_error(interaction.channel, interaction.user, response)
+        return
         
         # Apply the same cleaning pipeline as regular messages
         guild = interaction.guild
@@ -3883,9 +3960,9 @@ async def send_fun_command_response(interaction: discord.Interaction, response: 
             cleaned_response = sanitize_user_mentions(cleaned_response, guild)
         
         # Send as single message
-        if len(cleaned_response) > 2000:
-            for i in range(0, len(cleaned_response), 2000):
-                await interaction.followup.send(cleaned_response[i:i+2000])
+        if len(cleaned_response) > 4000:
+            for i in range(0, len(cleaned_response), 4000):
+                await interaction.followup.send(cleaned_response[i:i+4000])
         else:
             await interaction.followup.send(cleaned_response)
 
@@ -6379,7 +6456,7 @@ async def kiss_command(interaction: discord.Interaction):
     kiss_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a kiss! React naturally to being kissed by them. Be flustered, surprised, happy, aroused, or however your character would react to suddenly being kissed. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /kiss]\n{kiss_instruction}", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /kiss]", interaction.user.id, guild_id, user_name=user_name)
     
     async with interaction.channel.typing():
         response = await generate_response(
@@ -6405,7 +6482,7 @@ async def hug_command(interaction: discord.Interaction):
     hug_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a warm hug! React naturally to being hugged by them. Be comforted, happy, grateful, upset, or however your character would respond to a nice hug. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /hug]\n{hug_instruction}", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /hug]", interaction.user.id, guild_id, user_name=user_name)
 
     async with interaction.channel.typing():
         response = await generate_response(
@@ -6431,7 +6508,7 @@ async def joke_command(interaction: discord.Interaction):
     joke_instruction = f"[SPECIAL INSTRUCTION]: {user_name} wants you to tell them a joke! Tell a funny, uncensored joke that fits your character's personality. Make it entertaining and engaging. You can be witty, punny, clever, or whatever style fits your character! NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /joke]\n{joke_instruction}", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /joke]", interaction.user.id, guild_id, user_name=user_name)
 
     async with interaction.channel.typing():
         response = await generate_response(
@@ -6457,7 +6534,7 @@ async def bonk_command(interaction: discord.Interaction):
     bonk_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bonked your head! React naturally to being bonked by them. Be in pain, upset, grateful, furious, or however your character would respond to a silly bonk. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bonk]\n{bonk_instruction}", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bonk]", interaction.user.id, guild_id, user_name=user_name)
     
     async with interaction.channel.typing():
         response = await generate_response(
@@ -6483,7 +6560,7 @@ async def bite_command(interaction: discord.Interaction):
     bite_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bit you! React naturally to being bit by them. Be in pain, amused, laughing, upset, or however your character would respond to a playful bite. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bite]\n{bite_instruction}", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bite]", interaction.user.id, guild_id, user_name=user_name)
 
     async with interaction.channel.typing():
         response = await generate_response(
@@ -6536,7 +6613,7 @@ async def affection_command(interaction: discord.Interaction):
     affection_instruction = f"[SPECIAL INSTRUCTION]: {user_name} wants to know how much you like them! Based on your chat history and interactions, give them a percentage score (0-100%) of how much you like them, and explain why. Be honest. Consider things like: how often you've talked, how nice they've been, shared interests, funny moments, etc. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!\n{interaction_context}"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /affection]\n{affection_instruction}", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /affection]", interaction.user.id, guild_id, user_name=user_name)
     
     async with interaction.channel.typing():
         response = await generate_response(
@@ -6873,17 +6950,17 @@ async def dm_edit_last_message(interaction: discord.Interaction, new_content: st
         sent_messages = []
         if len(message_parts) > 1:
             for part in message_parts:
-                if len(part) > 2000:
-                    for i in range(0, len(part), 2000):
-                        sent_msg = await interaction.channel.send(part[i:i+2000])
+                if len(part) > 4000:
+                    for i in range(0, len(part), 4000):
+                        sent_msg = await interaction.channel.send(part[i:i+4000])
                         sent_messages.append(sent_msg)
                 else:
                     sent_msg = await interaction.channel.send(part)
                     sent_messages.append(sent_msg)
         else:
-            if len(new_content) > 2000:
-                for i in range(0, len(new_content), 2000):
-                    sent_msg = await interaction.channel.send(new_content[i:i+2000])
+            if len(new_content) > 4000:
+                for i in range(0, len(new_content), 4000):
+                    sent_msg = await interaction.channel.send(new_content[i:i+4000])
                     sent_messages.append(sent_msg)
             else:
                 sent_msg = await interaction.channel.send(new_content)
@@ -6991,17 +7068,17 @@ async def dm_regenerate_last_response(interaction: discord.Interaction):
             sent_messages = []
             if len(message_parts) > 1:
                 for part in message_parts:
-                    if len(part) > 2000:
-                        for i in range(0, len(part), 2000):
-                            sent_msg = await interaction.channel.send(part[i:i+2000])
+                    if len(part) > 4000:
+                        for i in range(0, len(part), 4000):
+                            sent_msg = await interaction.channel.send(part[i:i+4000])
                             sent_messages.append(sent_msg)
                     else:
                         sent_msg = await interaction.channel.send(part)
                         sent_messages.append(sent_msg)
             else:
-                if len(new_response) > 2000:
-                    for i in range(0, len(new_response), 2000):
-                        sent_msg = await interaction.channel.send(new_response[i:i+2000])
+                if len(new_response) > 4000:
+                    for i in range(0, len(new_response), 4000):
+                        sent_msg = await interaction.channel.send(new_response[i:i+4000])
                         sent_messages.append(sent_msg)
                 else:
                     sent_msg = await interaction.channel.send(new_response)
