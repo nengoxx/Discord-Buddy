@@ -93,8 +93,7 @@ DM_NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_nsfw_settings.json")
 
 # Files for old prompt system - TO BE REMOVED
 CUSTOM_PROMPTS_FILE = os.path.join(DATA_DIR, "custom_prompts.json")
-PROMPT_SETTINGS_FILE = os.path.join(DATA_DIR, "prompt_settings.json")
-DM_PROMPT_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_prompt_settings.json")
+# Removed: PROMPT_SETTINGS_FILE and DM_PROMPT_SETTINGS_FILE - no longer needed
 
 # AI Provider Classes
 class AIProvider(ABC):
@@ -1536,24 +1535,37 @@ class RequestQueue:
                 
                 # Send the response
                 message_parts = split_message_by_newlines(bot_response)
+                is_dm = isinstance(message.channel, discord.DMChannel)
                 
                 sent_messages = []
                 if len(message_parts) > 1:
                     for part in message_parts:
                         if len(part) > 4000:
                             for i in range(0, len(part), 4000):
-                                sent_msg = await message.channel.send(part[i:i+4000])
+                                if is_dm:
+                                    sent_msg = await message.channel.send(part[i:i+4000])
+                                else:
+                                    sent_msg = await message.reply(part[i:i+4000])
                                 sent_messages.append(sent_msg)
                         else:
-                            sent_msg = await message.channel.send(part)
+                            if is_dm:
+                                sent_msg = await message.channel.send(part)
+                            else:
+                                sent_msg = await message.reply(part)
                             sent_messages.append(sent_msg)
                 elif bot_response:
                     if len(bot_response) > 4000:
                         for i in range(0, len(bot_response), 4000):
-                            sent_msg = await message.channel.send(bot_response[i:i+4000])
+                            if is_dm:
+                                sent_msg = await message.channel.send(bot_response[i:i+4000])
+                            else:
+                                sent_msg = await message.reply(bot_response[i:i+4000])
                             sent_messages.append(sent_msg)
                     else:
-                        sent_msg = await message.channel.send(bot_response)
+                        if is_dm:
+                            sent_msg = await message.channel.send(bot_response)
+                        else:
+                            sent_msg = await message.reply(bot_response)
                         sent_messages.append(sent_msg)
                 
                 if len(sent_messages) > 1:
@@ -1900,66 +1912,14 @@ bot_persona_name: str = "Assistant"
 recently_deleted_dm_messages: Dict[int, Set[int]] = {}
 
 # Temporary old system variables - TO BE COMPLETELY REMOVED
-custom_prompts: Dict[int, Dict[str, Dict[str, str]]] = {}
-channel_prompt_settings: Dict[int, str] = {}
-dm_prompt_settings: Dict[int, str] = {}
+# custom_prompts: Dict[int, Dict[str, Dict[str, str]]] = {}
+# channel_prompt_settings: Dict[int, str] = {}
+# dm_prompt_settings: Dict[int, str] = {}
 
-def migrate_old_nsfw_styles():
-    """Migrate old NSFW styles to the new separate NSFW toggle system"""
-    # Migration mapping
-    nsfw_style_mapping = {
-        "conversational nsfw": ("conversational", True),
-        "asterisk nsfw": ("asterisk", True),
-        "narrative nsfw": ("narrative", True)
-    }
-    
-    # Migrate DM settings
-    dm_changed = False
-    for user_id, style in list(dm_prompt_settings.items()):
-        if style in nsfw_style_mapping:
-            new_style, nsfw_enabled = nsfw_style_mapping[style]
-            dm_prompt_settings[user_id] = new_style
-            dm_nsfw_settings[user_id] = nsfw_enabled
-            dm_changed = True
-            print(f"Migrated DM user {user_id}: {style} -> {new_style} (NSFW: {nsfw_enabled})")
-    
-    # Migrate channel settings
-    channel_changed = False
-    for channel_id, style in list(channel_prompt_settings.items()):
-        if style in nsfw_style_mapping:
-            new_style, nsfw_enabled = nsfw_style_mapping[style]
-            channel_prompt_settings[channel_id] = new_style
-            # Note: Channel-level NSFW isn't implemented yet, so this would need guild context
-            channel_changed = True
-            print(f"Migrated channel {channel_id}: {style} -> {new_style} (NSFW: {nsfw_enabled})")
-    
-    # Migrate server format defaults
-    server_changed = False
-    for guild_id, style in list(server_format_defaults.items()):
-        if style in nsfw_style_mapping:
-            new_style, nsfw_enabled = nsfw_style_mapping[style]
-            server_format_defaults[guild_id] = new_style
-            guild_nsfw_settings[guild_id] = nsfw_enabled
-            server_changed = True
-            print(f"Migrated server {guild_id}: {style} -> {new_style} (NSFW: {nsfw_enabled})")
-    
-    # Save migrated settings
-    if dm_changed:
-        save_json_data(DM_PROMPT_SETTINGS_FILE, dm_prompt_settings)
-        save_json_data(DM_NSFW_SETTINGS_FILE, dm_nsfw_settings)
-    
-    if channel_changed:
-        save_json_data(PROMPT_SETTINGS_FILE, channel_prompt_settings)
-    
-    if server_changed:
-        save_json_data(SERVER_FORMAT_DEFAULTS_FILE, server_format_defaults)
-        save_json_data(NSFW_SETTINGS_FILE, guild_nsfw_settings)
-    
-    if dm_changed or channel_changed or server_changed:
-        print("Migration complete: Old NSFW style variants have been converted to separate NSFW toggles")
+# Migration function removed - no longer needed
 
 # Run migration on startup
-migrate_old_nsfw_styles()
+# migrate_old_nsfw_styles()  # Removed - no longer needed
 
 # Initialize managers
 lore_book = LoreBook()
@@ -3876,10 +3836,10 @@ async def on_message(message: discord.Message):
             embed.set_footer(text="This message is sent to inform you why the bot isn't responding to your DMs.")
             
             try:
-                await message.channel.send(embed=embed)
+                await message.reply(embed=embed)
             except:
                 # Fallback if embed fails
-                await message.channel.send(f"🔒 **DMs Disabled**\n\n"
+                await message.reply(f"🔒 **DMs Disabled**\n\n"
                                           f"Sorry, but DMs with this bot have been disabled by the administrators of **{blocking_guild.name}**.\n\n"
                                           f"Please contact the server administrators to request DM access, or use the bot in server channels instead.")
             return
@@ -5272,31 +5232,6 @@ async def nsfw_info(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 # PERSONALITY COMMANDS
-@tree.command(name="prompt_set", description="[DEPRECATED] Use /format_set instead")
-@app_commands.describe(
-    style="Choose your conversation style",
-    scope="Server scope (channel/server) - only for servers, not DMs"
-)
-async def prompt_set_deprecated(
-    interaction: discord.Interaction,
-    style: str,
-    scope: str = None
-):
-    """DISABLED: Redirect users to format_set command"""
-    await interaction.response.send_message(
-        "❌ **The `/prompt_set` command has been replaced!**\n\n"
-        "✅ **Use `/format_set` instead** for setting conversation styles.\n\n"
-        "**Available styles:**\n"
-        "• `conversational` - Normal Discord chat\n"
-        "• `asterisk` - Roleplay with *actions*\n" 
-        "• `narrative` - Rich storytelling format\n\n"
-        "**Usage examples:**\n"
-        "• `/format_set conversational` (in DMs)\n"
-        "• `/format_set asterisk channel` (channel only)\n"
-        "• `/format_set narrative server` (server default, admin only)",
-        ephemeral=True
-    )
-
 # PERSONALITY COMMANDS
 
 @tree.command(name="personality_create", description="Create a new personality for the bot (Admin only)")
