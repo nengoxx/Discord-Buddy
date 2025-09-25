@@ -3034,13 +3034,6 @@ You can mention a specific user by including <@user_id> in your response, but on
         print(f"📊 Model Provider: {debug_provider}")
         print(f"🎯 Model: {debug_model}")
         print(f"🌡️  Temperature: {temperature}")
-        print(f"📍 Guild ID: {guild_id}")
-        print(f"💬 Channel ID: {channel_id}")
-        print(f"👤 User ID: {user_id}")
-        print(f"🔒 Is DM: {is_dm}")
-        print(f"🎭 Format Style: {format_style}")
-        print(f"📏 Message History Length: {len(history)}")
-        print(f"📝 System Prompt Length: {len(system_prompt)} chars")
         
         print("\n🎯 SYSTEM PROMPT:")
         print("-" * 40)
@@ -3052,14 +3045,7 @@ You can mention a specific user by including <@user_id> in your response, but on
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             print(f"[{i+1}] {role.upper()}: {content}")
-            
-        print("\n🔧 FORMAT INSTRUCTIONS:")
-        print("-" * 40)
-        print(format_instructions)
         print("="*80)
-        # ========== END DEBUG LOGGING ==========
-        print("🔍 DEBUG: EXITED DEBUG LOGGING SECTION")
-        print("🔍 DEBUG: Debug logging section completed, about to call ai_manager...")
 
         bot_response = await ai_manager.generate_response(
             messages=history,
