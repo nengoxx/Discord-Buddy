@@ -2966,6 +2966,11 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
         if not last_user_message:
             last_user_message = user_message
 
+        # Remove the last user message from history if there are multiple messages
+        # (it will only appear in the <message> section)
+        if len(history) > 1 and history and history[-1].get("role") == "user":
+            history.pop()  # Remove the last message if it's a user message and we have multiple messages
+
         # Get format-specific instructions
         format_instructions = ""
         format_style = "conversational"
@@ -2980,7 +2985,7 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                 format_style = server_style if server_style else "conversational"
         
         if format_style == "conversational":
-            format_instructions = "In your response, adapt the internet language. Never use asterisks or em-dashes. Do not repeat after yourself or others. You're free to reply with just one word or emoji. Keep your response's length up to one sentence long."
+            format_instructions = "In your response, adapt the internet language. Never use em-dashes or asterisks. Do not repeat after yourself or others. You're free to reply with just one word or emoji. Keep your response's length up to one sentence long."
         elif format_style == "asterisk":
             format_instructions = "In your response, write asterisk roleplay. Enclose actions and descriptions in *asterisks*, keeping dialogues as plain text. Never use em-dashes or nested asterisks. Do not repeat after yourself or others. Be creative. Keep your response's length between one to three short paragraphs long."
         elif format_style == "narrative":
