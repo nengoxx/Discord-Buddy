@@ -90,6 +90,7 @@ DM_FORMAT_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_format_settings.json")
 SERVER_FORMAT_DEFAULTS_FILE = os.path.join(DATA_DIR, "server_format_defaults.json")
 NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "nsfw_settings.json")
 DM_NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_nsfw_settings.json")
+CUSTOM_FORMAT_INSTRUCTIONS_FILE = os.path.join(DATA_DIR, "custom_format_instructions.json")
 
 # Files for old prompt system - TO BE REMOVED
 CUSTOM_PROMPTS_FILE = os.path.join(DATA_DIR, "custom_prompts.json")
@@ -1861,6 +1862,10 @@ def save_custom_prompts():
     }
     save_json_data(CUSTOM_PROMPTS_FILE, save_data, convert_keys=False)
 
+def save_custom_format_instructions():
+    """Save custom format instructions to file"""
+    save_json_data(CUSTOM_FORMAT_INSTRUCTIONS_FILE, custom_format_instructions, convert_keys=False)
+
 def load_custom_prompts():
     """Load custom prompts from file"""
     data = load_json_data(CUSTOM_PROMPTS_FILE, convert_keys=False)
@@ -1898,6 +1903,7 @@ dm_format_settings: Dict[int, str] = load_json_data(DM_FORMAT_SETTINGS_FILE)
 server_format_defaults: Dict[int, str] = load_json_data(SERVER_FORMAT_DEFAULTS_FILE)
 guild_nsfw_settings: Dict[int, bool] = load_json_data(NSFW_SETTINGS_FILE)
 dm_nsfw_settings: Dict[int, bool] = load_json_data(DM_NSFW_SETTINGS_FILE)
+custom_format_instructions: Dict[str, str] = load_json_data(CUSTOM_FORMAT_INSTRUCTIONS_FILE, convert_keys=False)
 multipart_responses: Dict[int, Dict[int, Tuple[List[int], str]]] = {}
 multipart_response_counter: Dict[int, int] = {}
 guild_personalities: Dict[int, str] = {}
@@ -3213,7 +3219,10 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                 server_style = server_format_defaults.get(guild_id) if guild_id else None
                 format_style = server_style if server_style else "conversational"
         
-        if format_style == "conversational":
+        # Check for custom format instructions first
+        if format_style in custom_format_instructions:
+            format_instructions = custom_format_instructions[format_style]
+        elif format_style == "conversational":
             format_instructions = "In your response, adapt the internet language. Never use em-dashes or asterisks. Do not repeat after yourself or others. You're free to reply with just one word or emoji. Keep your response's length up to one sentence long."
         elif format_style == "asterisk":
             format_instructions = "In your response, write asterisk roleplay. Enclose actions and descriptions in *asterisks*, keeping dialogues as plain text. Never use em-dashes or nested asterisks. Do not repeat after yourself or others. Be creative. Keep your response's length between one to three short paragraphs long."
@@ -4714,7 +4723,7 @@ async def help_command(interaction: discord.Interaction):
     
     embed.add_field(
         name="💬 Response Format Commands",
-        value="`/format_set <style> [scope]` - Set response format with dropdown choices! (conversational/asterisk/narrative)\n`/format_info` - Show current format and available options\n`/format_view [type]` - View format instruction templates\n`/format_edit <type> <instructions>` - Edit format templates (Admin only)\n`/nsfw_set <enabled> [scope]` - Enable/disable NSFW content\n`/nsfw_info` - Show current NSFW settings",
+        value="`/format_set <style> [scope]` - Set response format with dropdown choices! (conversational/asterisk/narrative)\n`/format_info` - Show current format and available options\n`/format_view [type]` - View format instruction templates\n`/format_edit <type> [instructions]` - Edit format templates or reset to default (Admin only)\n`/nsfw_set <enabled> [scope]` - Enable/disable NSFW content\n`/nsfw_info` - Show current NSFW settings",
         inline=False
     )
     
@@ -4944,7 +4953,7 @@ async def show_format_info(interaction: discord.Interaction):
 # CONVERSATION STYLE COMMANDS
 
 @tree.command(name="format_edit", description="Edit format instruction templates (Admin only)")
-async def edit_format_instructions(interaction: discord.Interaction, format_type: str, instructions: str):
+async def edit_format_instructions(interaction: discord.Interaction, format_type: str, instructions: str = None):
     """Edit format instruction templates for conversational, asterisk, or narrative styles"""
     await interaction.response.defer(ephemeral=True)
     
@@ -4960,34 +4969,52 @@ async def edit_format_instructions(interaction: discord.Interaction, format_type
                                        f"**Valid types:** {', '.join(VALID_FORMAT_STYLES)}")
         return
     
-    # Validate instructions length
-    if not (10 <= len(instructions) <= 1000):
-        await interaction.followup.send("❌ Format instructions must be between 10 and 1000 characters.")
-        return
+    # Handle reset to default
+    if instructions is None or instructions.strip() == "":
+        if format_type in custom_format_instructions:
+            del custom_format_instructions[format_type]
+            save_custom_format_instructions()
+            
+            embed = discord.Embed(
+                title="🔄 Format Instructions Reset",
+                description=f"Successfully reset **{format_type.title()}** format instructions to default!",
+                color=0xffaa00
+            )
+            
+            embed.add_field(
+                name=f"📝 Format Type: {format_type.title()}",
+                value="Now using built-in default instructions.",
+                inline=False
+            )
+        else:
+            embed = discord.Embed(
+                title="ℹ️ No Custom Instructions",
+                description=f"**{format_type.title()}** format is already using default instructions.",
+                color=0x888888
+            )
+    else:
+        # Validate instructions length
+        if not (10 <= len(instructions) <= 1000):
+            await interaction.followup.send("❌ Format instructions must be between 10 and 1000 characters.")
+            return
+        
+        # Save the custom format instructions
+        custom_format_instructions[format_type] = instructions
+        save_custom_format_instructions()
+        
+        embed = discord.Embed(
+            title="✅ Format Instructions Updated",
+            description=f"Successfully updated **{format_type.title()}** format instructions!",
+            color=0x00ff00
+        )
+        
+        embed.add_field(
+            name=f"📝 Format Type: {format_type.title()}",
+            value=f"**New Instructions:**\n{instructions}",
+            inline=False
+        )
     
-    # TODO: Store custom format instructions in a file/database
-    # For now, show what would be changed
-    
-    embed = discord.Embed(
-        title="⚠️ Format Edit Preview",
-        description="This feature is coming soon! Here's what would be changed:",
-        color=0xffaa00
-    )
-    
-    embed.add_field(
-        name=f"📝 Format Type: {format_type.title()}",
-        value=f"**New Instructions:**\n{instructions}",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="💡 Note",
-        value="Format instruction editing will be implemented in a future update. "
-              "Currently, format instructions are built into the system.",
-        inline=False
-    )
-    
-    embed.set_footer(text="Use /format_info to see current format styles")
+    embed.set_footer(text="Changes will take effect immediately for new responses")
     await interaction.followup.send(embed=embed)
 
 # Autocomplete for format_edit command
@@ -5021,12 +5048,19 @@ async def view_format_instructions(interaction: discord.Interaction, format_type
                                            f"**Valid types:** {', '.join(VALID_FORMAT_STYLES)}")
             return
     
-    # Get current hardcoded format instructions
-    format_instructions = {
-        "conversational": "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. Avoid usingasterisks and em-dashes. Do not repeat after yourself or others.",
-        "asterisk": "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. Avoid using em-dashes and nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative.",
-        "narrative": "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. Avoid using em-dashes and asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
-    }
+    # Get current format instructions (custom or default)
+    format_instructions = {}
+    for fmt_type in VALID_FORMAT_STYLES:
+        if fmt_type in custom_format_instructions:
+            format_instructions[fmt_type] = f"**Custom:** {custom_format_instructions[fmt_type]}"
+        else:
+            # Default instructions
+            if fmt_type == "conversational":
+                format_instructions[fmt_type] = "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. Avoid using asterisks and em-dashes. Do not repeat after yourself or others."
+            elif fmt_type == "asterisk":
+                format_instructions[fmt_type] = "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. Avoid using em-dashes and nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative."
+            elif fmt_type == "narrative":
+                format_instructions[fmt_type] = "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. Avoid using em-dashes and asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
     
     embed = discord.Embed(
         title="📋 Format Instruction Templates",
@@ -5054,7 +5088,7 @@ async def view_format_instructions(interaction: discord.Interaction, format_type
     
     embed.add_field(
         name="💡 Note",
-        value="These are currently built-in templates. Use `/format_edit` to customize them (Admin only).",
+        value="**Custom** instructions are marked with 'Custom:' prefix. Use `/format_edit` to customize them (Admin only).",
         inline=False
     )
     
@@ -5663,17 +5697,37 @@ async def set_bot_avatar(interaction: discord.Interaction, image_url: str = None
         await interaction.followup.send("❌ Only administrators can change the bot's avatar!")
         return
     
-    # If no URL provided, check for attachment
-    if not image_url and not interaction.data.get('resolved', {}).get('attachments'):
-        await interaction.followup.send("❌ Please provide an image URL or attach an image!\n"
-                                       "**Usage:** `/bot_avatar_set https://example.com/image.png`\n"
-                                       "**Or:** Upload an image with the command")
-        return
-    
-    try:
-        # Get image data
-        if image_url:
-            # Download from URL
+    # Check for attachments first
+    attachments = interaction.data.get('resolved', {}).get('attachments', {})
+    if attachments:
+        # Use the first attachment
+        attachment_id = list(attachments.keys())[0]
+        attachment = attachments[attachment_id]
+        
+        # Validate image
+        if not any(attachment['filename'].lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+            await interaction.followup.send("❌ Please upload a valid image file (PNG, JPG, GIF, or WebP)!")
+            return
+        
+        if attachment['size'] > 8 * 1024 * 1024:  # 8MB limit
+            await interaction.followup.send("❌ Image is too large! Must be under 8MB.")
+            return
+        
+        try:
+            # Download image data
+            async with aiohttp.ClientSession() as session:
+                async with session.get(attachment['url']) as resp:
+                    if resp.status != 200:
+                        await interaction.followup.send("❌ Failed to download the uploaded image!")
+                        return
+                    
+                    image_data = await resp.read()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to process uploaded image: {str(e)}")
+            return
+    elif image_url:
+        # Download from URL
+        try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(image_url) as resp:
                     if resp.status != 200:
@@ -5685,15 +5739,21 @@ async def set_bot_avatar(interaction: discord.Interaction, image_url: str = None
                     else:
                         await interaction.followup.send("❌ URL does not point to a valid image!")
                         return
-        else:
-            await interaction.followup.send("❌ Please provide an image URL for now. Attachment support coming soon!")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to download image: {str(e)}")
             return
-        
-        # Check file size (Discord limit is 8MB for avatars)
-        if len(image_data) > 8 * 1024 * 1024:
-            await interaction.followup.send("❌ Image is too large! Must be under 8MB.")
-            return
-        
+    else:
+        await interaction.followup.send("❌ Please provide an image URL or upload an image!\n"
+                                       "**Usage:** `/bot_avatar_set https://example.com/image.png`\n"
+                                       "**Or:** Upload an image with the command")
+        return
+    
+    # Check file size (Discord limit is 8MB for avatars)
+    if len(image_data) > 8 * 1024 * 1024:
+        await interaction.followup.send("❌ Image is too large! Must be under 8MB.")
+        return
+    
+    try:
         # Change avatar
         await client.user.edit(avatar=image_data)
         await interaction.followup.send("✅ **Bot avatar changed successfully!** 🎨\n"
