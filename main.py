@@ -154,6 +154,11 @@ class ClaudeProvider(AIProvider):
             ]):
                 return f"❌ Claude API error: {response_text}"
             
+            # Clean any base64 data from the response
+            import re
+            response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
+            response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
+            
             return response_text
         except Exception as e:
             return f"❌ Claude API error: {str(e)}"
@@ -259,7 +264,12 @@ class GeminiProvider(AIProvider):
                     "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
                 ]):
                     return f"❌ Gemini API error: {response.text}"
-                return response.text
+                
+                # Clean any base64 data from the response
+                import re
+                clean_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response.text)
+                clean_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', clean_text)
+                return clean_text
             elif hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
                 if hasattr(candidate, 'content') and candidate.content:
@@ -277,6 +287,11 @@ class GeminiProvider(AIProvider):
                                 "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
                             ]):
                                 return f"❌ Gemini API error: {response_text}"
+                            
+                            # Clean any base64 data from the response
+                            import re
+                            response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
+                            response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
                             return response_text
                             
                 if hasattr(candidate, 'finish_reason'):
@@ -395,6 +410,11 @@ class OpenAIProvider(AIProvider):
                 "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
             ]):
                 return f"❌ OpenAI API error: {response_text}"
+            
+            # Clean any base64 data from the response
+            import re
+            response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
+            response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
             
             return response_text
             
@@ -665,6 +685,11 @@ class CustomProvider(AIProvider):
                 "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
             ]):
                 return f"❌ Custom API error: {response_text}"
+            
+            # Clean any base64 data from the response
+            import re
+            response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
+            response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
             
             return response_text
         
@@ -1842,6 +1867,25 @@ def load_custom_prompts():
 
 # Global state variables
 conversations: Dict[int, List[Dict]] = {}
+
+def clean_conversation_history():
+    """Clean any complex content (with base64 images) from conversation history, keeping only text"""
+    for channel_id in conversations:
+        for message in conversations[channel_id]:
+            content = message.get("content", "")
+            if isinstance(content, list):
+                # Extract only text parts from complex content
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                message["content"] = " ".join(text_parts).strip()
+
+# Clean conversation history on startup
+clean_conversation_history()
+
 channel_format_settings: Dict[int, str] = load_json_data(FORMAT_SETTINGS_FILE)
 dm_format_settings: Dict[int, str] = load_json_data(DM_FORMAT_SETTINGS_FILE)
 server_format_defaults: Dict[int, str] = load_json_data(SERVER_FORMAT_DEFAULTS_FILE)
@@ -2410,7 +2454,7 @@ async def get_bot_last_logical_message(channel) -> Tuple[List[discord.Message], 
     except Exception:
         return [], ""
 
-async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None) -> str:
+async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None, process_images: bool = True) -> str:
     """Add a message to conversation history with proper formatting and image support"""
     # print(f"DEBUG: add_to_history called with role={role}, content={repr(content)}, user_name={repr(user_name)}, user_id={user_id}, guild_id={guild_id}")
     if channel_id not in conversations:
@@ -2483,7 +2527,7 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
     message_content = formatted_content
     has_images = False
     
-    if role == "user" and attachments and not is_other_bot:
+    if role == "user" and attachments and not is_other_bot and process_images:
         # Get current provider to determine image format
         provider_name = "claude"  # default
         
@@ -2503,108 +2547,158 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
         
         # Process images if provider supports them
         if provider_name in ["claude", "gemini", "openai", "custom"]:
-            image_parts = []
-            text_parts = []
-            
-            # Add text content first
-            if formatted_content.strip():
-                if provider_name == "openai":
-                    text_parts.append({"type": "text", "text": formatted_content})
-                else:
-                    text_parts.append({"type": "text", "text": formatted_content})
-            
-            # Process each attachment with comprehensive filtering
-            total_processed_size = 0
-            max_total_size = 50 * 1024 * 1024  # 50MB total limit for all attachments combined
-            
-            for attachment in attachments:
-                # Check if we should process this attachment
-                should_process, reason = should_process_attachment(attachment, provider_name)
-                
-                if not should_process:
-                    # Add explanation for why attachment was skipped
-                    text_parts.append({"type": "text", "text": f" [{reason}]"})
-                    continue
-                
-                # Check total size limit
-                if total_processed_size + attachment.size > max_total_size:
-                    text_parts.append({"type": "text", "text": f" [Attachment {attachment.filename} skipped - total size limit exceeded]"})
-                    continue
-                
-                # Process based on file type
-                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                    # Image processing
-                    try:
-                        image_data = await process_image_attachment(attachment, provider_name)
-                        if image_data:
-                            image_parts.append(image_data)
-                            has_images = True
-                            total_processed_size += attachment.size
+            # Check if the current model supports vision
+            supports_vision = False
+            if provider_name == "claude":
+                # Claude models generally support vision
+                supports_vision = True
+            elif provider_name == "gemini":
+                # Gemini models support vision
+                supports_vision = True
+            elif provider_name == "openai":
+                # Check specific OpenAI models
+                current_model = None
+                try:
+                    if is_dm and user_id:
+                        selected_guild_id = dm_server_selection.get(user_id)
+                        if selected_guild_id:
+                            _, current_model = ai_manager.get_guild_settings(selected_guild_id)
+                        elif guild_id:
+                            _, current_model = ai_manager.get_guild_settings(guild_id)
+                    elif guild_id:
+                        _, current_model = ai_manager.get_guild_settings(guild_id)
+                    
+                    if current_model:
+                        vision_models = ["gpt-5", "gpt-5-chat-latest", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-vision-preview", "gpt-4.1", "gpt-4.1-mini"]
+                        supports_vision = any(vision_model in current_model.lower() for vision_model in vision_models)
+                except:
+                    supports_vision = False
+            elif provider_name == "custom":
+                # For custom providers, we check dynamically
+                current_model = None
+                try:
+                    if is_dm and user_id:
+                        selected_guild_id = dm_server_selection.get(user_id)
+                        if selected_guild_id:
+                            _, current_model = ai_manager.get_guild_settings(selected_guild_id)
+                        elif guild_id:
+                            _, current_model = ai_manager.get_guild_settings(guild_id)
+                    elif guild_id:
+                        _, current_model = ai_manager.get_guild_settings(guild_id)
+                    
+                    if current_model:
+                        # Use the dynamic vision check for custom providers
+                        custom_provider = ai_manager.providers.get("custom")
+                        if custom_provider and hasattr(custom_provider, 'supports_vision_dynamic'):
+                            supports_vision = asyncio.run(custom_provider.supports_vision_dynamic(current_model))
                         else:
-                            text_parts.append({"type": "text", "text": f" [Could not process image {attachment.filename}]"})
-                    except Exception as e:
-                        print(f"Error processing image {attachment.filename}: {e}")
-                        text_parts.append({"type": "text", "text": f" [Error processing image {attachment.filename}]"})
-                
-                elif any(attachment.filename.lower().endswith(ext) for ext in ['.txt', '.md', '.json', '.csv', '.log']):
-                    # Text file processing - read content if small enough
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(attachment.url) as resp:
-                                if resp.status == 200:
-                                    text_content = await resp.text()
-                                    # Limit text content length to prevent bloat
-                                    if len(text_content) > 5000:
-                                        text_content = text_content[:5000] + "... [truncated]"
-                                    text_parts.append({"type": "text", "text": f"\n[File content of {attachment.filename}]:\n{text_content}\n[End of file]"})
-                                    total_processed_size += attachment.size
-                                else:
-                                    text_parts.append({"type": "text", "text": f" [Could not read file {attachment.filename}]"})
-                    except Exception as e:
-                        print(f"Error processing text file {attachment.filename}: {e}")
-                        text_parts.append({"type": "text", "text": f" [Error reading file {attachment.filename}]"})
-                
-                else:
-                    # Other supported file types (like audio) - just mention them
-                    file_size_mb = attachment.size / (1024 * 1024)
-                    text_parts.append({"type": "text", "text": f" [File: {attachment.filename} ({file_size_mb:.1f}MB)]"})
-                    total_processed_size += attachment.size
+                            supports_vision = False
+                except:
+                    supports_vision = False
             
-            # Combine text and images into complex content
-            if has_images:
-                message_content = text_parts + image_parts
-            else:
-                # No valid images, use regular text content with filtered attachment notes
-                attachment_notes = []
-                for attachment in attachments:
-                    should_process, reason = should_process_attachment(attachment, provider_name)
-                    if should_process:
-                        file_size_mb = attachment.size / (1024 * 1024)
-                        attachment_notes.append(f"[Attachment: {attachment.filename} ({file_size_mb:.1f}MB)]")
+            if supports_vision:
+                image_parts = []
+                text_parts = []
+                
+                # Add text content first
+                if formatted_content.strip():
+                    if provider_name == "openai":
+                        text_parts.append({"type": "text", "text": formatted_content})
                     else:
-                        attachment_notes.append(f"[{reason}]")
+                        text_parts.append({"type": "text", "text": formatted_content})
                 
-                if attachment_notes:
-                    message_content = formatted_content + " " + " ".join(attachment_notes)
-        else:
-            # Provider doesn't support images, add text descriptions with filtering
-            attachment_parts = []
-            for attachment in attachments:
-                # Check if we should process this attachment
-                should_process, reason = should_process_attachment(attachment, provider_name)
+                # Process each attachment with comprehensive filtering
+                total_processed_size = 0
+                max_total_size = 50 * 1024 * 1024  # 50MB total limit for all attachments combined
                 
-                if not should_process:
-                    attachment_parts.append(f"[{reason}]")
-                    continue
+                for attachment in attachments:
+                    # Check if we should process this attachment
+                    should_process, reason = should_process_attachment(attachment, provider_name)
+                    
+                    if not should_process:
+                        # Add explanation for why attachment was skipped
+                        text_parts.append({"type": "text", "text": f" [{reason}]"})
+                        continue
+                    
+                    # Check total size limit
+                    if total_processed_size + attachment.size > max_total_size:
+                        text_parts.append({"type": "text", "text": f" [Attachment {attachment.filename} skipped - total size limit exceeded]"})
+                        continue
+                    
+                    # Process based on file type
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                        # Image processing
+                        try:
+                            image_data = await process_image_attachment(attachment, provider_name)
+                            if image_data:
+                                image_parts.append(image_data)
+                                has_images = True
+                                total_processed_size += attachment.size
+                            else:
+                                text_parts.append({"type": "text", "text": f" [Could not process image {attachment.filename}]"})
+                        except Exception as e:
+                            print(f"Error processing image {attachment.filename}: {e}")
+                            text_parts.append({"type": "text", "text": f" [Error processing image {attachment.filename}]"})
+                    
+                    elif any(attachment.filename.lower().endswith(ext) for ext in ['.txt', '.md', '.json', '.csv', '.log']):
+                        # Text file processing - read content if small enough
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(attachment.url) as resp:
+                                    if resp.status == 200:
+                                        text_content = await resp.text()
+                                        # Limit text content length to prevent bloat
+                                        if len(text_content) > 5000:
+                                            text_content = text_content[:5000] + "... [truncated]"
+                                        text_parts.append({"type": "text", "text": f"\n[File content of {attachment.filename}]:\n{text_content}\n[End of file]"})
+                                        total_processed_size += attachment.size
+                                    else:
+                                        text_parts.append({"type": "text", "text": f" [Could not read file {attachment.filename}]"})
+                        except Exception as e:
+                            print(f"Error processing text file {attachment.filename}: {e}")
+                            text_parts.append({"type": "text", "text": f" [Error reading file {attachment.filename}]"})
+                    
+                    else:
+                        # Other supported file types (like audio) - just mention them
+                        file_size_mb = attachment.size / (1024 * 1024)
+                        text_parts.append({"type": "text", "text": f" [File: {attachment.filename} ({file_size_mb:.1f}MB)]"})
+                        total_processed_size += attachment.size
                 
-                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                    attachment_parts.append(f"[Image: {attachment.filename} - current AI model doesn't support images]")
+                # Combine text and images into complex content
+                if has_images:
+                    message_content = text_parts + image_parts
                 else:
-                    file_size_mb = attachment.size / (1024 * 1024)
-                    attachment_parts.append(f"[File: {attachment.filename} ({file_size_mb:.1f}MB)]")
-            
-            if attachment_parts:
-                message_content = formatted_content + " " + " ".join(attachment_parts)
+                    # No valid images, use regular text content with filtered attachment notes
+                    attachment_notes = []
+                    for attachment in attachments:
+                        should_process, reason = should_process_attachment(attachment, provider_name)
+                        if should_process:
+                            file_size_mb = attachment.size / (1024 * 1024)
+                            attachment_notes.append(f"[Attachment: {attachment.filename} ({file_size_mb:.1f}MB)]")
+                        else:
+                            attachment_notes.append(f"[{reason}]")
+                    
+                    if attachment_notes:
+                        message_content = formatted_content + " " + " ".join(attachment_notes)
+            else:
+                # Provider doesn't support images, add text descriptions with filtering
+                attachment_parts = []
+                for attachment in attachments:
+                    # Check if we should process this attachment
+                    should_process, reason = should_process_attachment(attachment, provider_name)
+                    
+                    if not should_process:
+                        attachment_parts.append(f"[{reason}]")
+                        continue
+                    
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                        attachment_parts.append(f"[Image: {attachment.filename} - current AI model doesn't support images]")
+                    else:
+                        file_size_mb = attachment.size / (1024 * 1024)
+                        attachment_parts.append(f"[File: {attachment.filename} ({file_size_mb:.1f}MB)]")
+                
+                if attachment_parts:
+                    message_content = formatted_content + " " + " ".join(attachment_parts)
 
     # Check if we should group with the previous message (only for text content)
     should_group = False
@@ -2800,7 +2894,8 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     channel.id, 
                     "assistant", 
                     content, 
-                    guild_id=history_guild_id
+                    guild_id=history_guild_id,
+                    process_images=False
                 )
             else:
                 # Get the actual username
@@ -2812,7 +2907,8 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     content, 
                     user_id=group["author_id"], 
                     guild_id=history_guild_id, 
-                    user_name=user_name
+                    user_name=user_name,
+                    process_images=False
                 )
 
         return get_conversation_history(channel.id)
@@ -3191,7 +3287,28 @@ You can mention a specific user by including <@user_id> in your response, but on
         for i, msg in enumerate(history):
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
-            print(f"[{i+1}] {role.upper()}: {content}")
+            
+            # Clean content for display (remove base64 data)
+            if isinstance(content, list):
+                display_parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            text = part.get("text", "")
+                            display_parts.append(f"[TEXT: {text[:100]}...]" if len(text) > 100 else f"[TEXT: {text}]")
+                        elif part.get("type") == "image_url":
+                            display_parts.append("[IMAGE]")
+                        elif part.get("type") == "image":
+                            display_parts.append("[IMAGE]")
+                        else:
+                            display_parts.append(f"[{part.get('type', 'unknown').upper()}]")
+                    elif isinstance(part, str):
+                        display_parts.append(part[:100] + "..." if len(part) > 100 else part)
+                display_content = " ".join(display_parts)
+            else:
+                display_content = content[:200] + "..." if isinstance(content, str) and len(content) > 200 else str(content)
+            
+            print(f"[{i+1}] {role.upper()}: {display_content}")
         print("="*80)
 
         bot_response = await ai_manager.generate_response(
@@ -3239,6 +3356,14 @@ You can mention a specific user by including <@user_id> in your response, but on
             else:
                 # For cases without original_message, still don't add to history but return None
                 return None
+
+        # Clean any base64 data from the response (AI sometimes returns input data)
+        if bot_response:
+            import re
+            # Remove base64 data patterns (data:image/...;base64,...)
+            bot_response = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', bot_response)
+            # Also remove standalone long base64 strings
+            bot_response = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', bot_response)
 
         # Clean malformed emojis
         if bot_response and guild:
