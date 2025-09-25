@@ -2976,6 +2976,16 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                            original_message and 
                            isinstance(original_message.channel, discord.DMChannel))
 
+        # Detect and extract special instructions
+        special_instruction = None
+        if user_message and "[SPECIAL INSTRUCTION]:" in user_message:
+            # Extract the special instruction
+            special_instruction_match = re.search(r'\[SPECIAL INSTRUCTION\]:\s*(.+)', user_message)
+            if special_instruction_match:
+                special_instruction = special_instruction_match.group(1).strip()
+                # Remove the special instruction from the user message, keep the command usage
+                user_message = re.sub(r'\s*\[SPECIAL INSTRUCTION\]:\s*.+', '', user_message).strip()
+
         if use_full_history:
             try:
                 # Load all DM history (this already adds the current message to history)
@@ -3077,7 +3087,7 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             format_instructions = "In your response, write narrative roleplay. Apply plain text for narration and \"quotation marks\" for dialogues. Never use em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell. Keep your response's length between one to three paragraphs long."
 
         # Append the system messages to complete the structure
-        history.append({"role": "system", "content": f"""</history>
+        system_message_content = f"""</history>
 
 Here is the last message in the conversation:
 <message>
@@ -3089,12 +3099,16 @@ How do you respond in the chat?
 Think about it first.
 
 If you choose to use server emojis in your response, follow the exact format of :emoji: or they won't work! Don't spam them.
-You may react to the users' messages. To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] (for standard emojis) or [REACT: :custom_emoji:] (for custom emojis). You don't have to react every time.
-You can mention a specific user by including <@user_id> in your response, but only do so if they are not currently participating in the conversation, and you want to grab their attention. Otherwise, you don't need to state any names; everyone can deduce to whom you're talking from context alone.
+You may react to the users' messages. To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] (for standard emojis) or [REACT: :custom_emoji:] (for custom emojis). No need to react every time.
+You can mention a specific user by including <@user_id> in your response, but only do so if they are not currently participating in the conversation, and you want to grab their attention. Otherwise, you don't have to state any names; everyone can deduce to whom you're talking from context alone. Do not include your own name in your response.
 
-{format_instructions}"""})
-
-        # ========== DEBUG LOGGING ==========
+{format_instructions}"""
+        
+        # Append special instruction at the very end if present
+        if special_instruction:
+            system_message_content += f"\n\n[SPECIAL INSTRUCTION]: {special_instruction}"
+        
+        history.append({"role": "system", "content": system_message_content})
         # Get current provider and model settings for logging
         debug_provider = "unknown"
         debug_model = "unknown"
@@ -3806,7 +3820,7 @@ async def check_up_task():
                         else:
                             context_info = ""
                         
-                        check_up_instruction = f"[SPECIAL INSTRUCTION]: It's been over 6 hours since you last talked to {user.display_name}. Send them a check-up message asking how they're doing or if they're there. Keep it brief and natural. You can reference recent conversation topics if appropriate.{context_info}\IMPORTANT: NO REACTS!"
+                        check_up_instruction = f"[SPECIAL INSTRUCTION]: It's been over 6 hours since you last talked to {user.display_name}. Send them a check-up message asking how they're doing or if they're there. Keep it brief and natural. You can reference recent conversation topics if appropriate. NO REACTS! {context_info}"
                         
                         # Generate contextual check-up message using the proper generate_response function
                         # This will apply the correct prompt type, personality, and all other settings
@@ -3846,10 +3860,27 @@ async def send_fun_command_response(interaction: discord.Interaction, response: 
             await send_dismissible_error(interaction.channel, interaction.user, response)
             return
         
+        # Apply the same cleaning pipeline as regular messages
+        guild = interaction.guild
+        
+        # CLEAN BOT NAME PREFIX (remove persona name from output)
+        response = clean_bot_name_prefix(response, guild.id if guild else None, interaction.user.id, isinstance(interaction.channel, discord.DMChannel))
+        
+        # CLEAN EM-DASHES (after bot name cleaning)
+        response = clean_em_dashes(response)
+        
         # Remove reaction instructions but preserve surrounding spaces
         reaction_pattern = r'\s*\[REACT:\s*([^\]]+)\]\s*'
         cleaned_response = re.sub(reaction_pattern, ' ', response).strip()
         cleaned_response = re.sub(r'  +', ' ', cleaned_response)
+        
+        # CLEAN EMOJIS (after reactions are processed)
+        if cleaned_response:
+            cleaned_response = clean_malformed_emojis(cleaned_response, guild)
+        
+        # Finally sanitize user mentions
+        if cleaned_response and not cleaned_response.startswith("❌"):
+            cleaned_response = sanitize_user_mentions(cleaned_response, guild)
         
         # Send as single message
         if len(cleaned_response) > 2000:
@@ -6345,15 +6376,15 @@ async def kiss_command(interaction: discord.Interaction):
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    kiss_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a kiss! React naturally to being kissed by them. Be flustered, surprised, happy, aroused, or however your character would react to suddenly being kissed. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    kiss_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a kiss! React naturally to being kissed by them. Be flustered, surprised, happy, aroused, or however your character would react to suddenly being kissed. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /kiss]", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /kiss]\n{kiss_instruction}", interaction.user.id, guild_id, user_name=user_name)
     
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            kiss_instruction, 
+            f"[{user_name} used /kiss]\n{kiss_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6371,15 +6402,15 @@ async def hug_command(interaction: discord.Interaction):
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    hug_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a warm hug! React naturally to being hugged by them. Be comforted, happy, grateful, upset, or however your character would respond to a nice hug. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    hug_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a warm hug! React naturally to being hugged by them. Be comforted, happy, grateful, upset, or however your character would respond to a nice hug. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /hug]", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /hug]\n{hug_instruction}", interaction.user.id, guild_id, user_name=user_name)
 
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            hug_instruction, 
+            f"[{user_name} used /hug]\n{hug_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6397,15 +6428,15 @@ async def joke_command(interaction: discord.Interaction):
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    joke_instruction = f"[SPECIAL INSTRUCTION]: {user_name} wants you to tell them a joke! Tell a funny, uncensored joke that fits your character's personality. Make it entertaining and engaging. You can be witty, punny, clever, or whatever style fits your character! REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    joke_instruction = f"[SPECIAL INSTRUCTION]: {user_name} wants you to tell them a joke! Tell a funny, uncensored joke that fits your character's personality. Make it entertaining and engaging. You can be witty, punny, clever, or whatever style fits your character! NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /joke]", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /joke]\n{joke_instruction}", interaction.user.id, guild_id, user_name=user_name)
 
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            joke_instruction, 
+            f"[{user_name} used /joke]\n{joke_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6423,15 +6454,15 @@ async def bonk_command(interaction: discord.Interaction):
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    bonk_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bonked your head! React naturally to being bonked by them. Be in pain, upset, grateful, furious, or however your character would respond to a silly bonk. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    bonk_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bonked your head! React naturally to being bonked by them. Be in pain, upset, grateful, furious, or however your character would respond to a silly bonk. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bonk]", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bonk]\n{bonk_instruction}", interaction.user.id, guild_id, user_name=user_name)
     
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            bonk_instruction, 
+            f"[{user_name} used /bonk]\n{bonk_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6443,21 +6474,21 @@ async def bonk_command(interaction: discord.Interaction):
         await send_fun_command_response(interaction, response)
 
 @tree.command(name="bite", description="Bite the bot! Chomp! 🧛")
-async def hug_command(interaction: discord.Interaction):
+async def bite_command(interaction: discord.Interaction):
     """User bites the bot - bot reacts accordingly"""
     await interaction.response.defer(ephemeral=False)
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    hug_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bit you! React naturally to being bit by them. Be in pain, amused, laughing, upset, or however your character would respond to a playful bite. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    bite_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bit you! React naturally to being bit by them. Be in pain, amused, laughing, upset, or however your character would respond to a playful bite. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bite]", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bite]\n{bite_instruction}", interaction.user.id, guild_id, user_name=user_name)
 
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            hug_instruction, 
+            f"[{user_name} used /bite]\n{bite_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6505,12 +6536,12 @@ async def affection_command(interaction: discord.Interaction):
     affection_instruction = f"[SPECIAL INSTRUCTION]: {user_name} wants to know how much you like them! Based on your chat history and interactions, give them a percentage score (0-100%) of how much you like them, and explain why. Be honest. Consider things like: how often you've talked, how nice they've been, shared interests, funny moments, etc. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!\n{interaction_context}"
     guild_id = interaction.guild.id if interaction.guild else None
 
-    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /affection]", interaction.user.id, guild_id, user_name=user_name)
+    await add_to_history(interaction.channel.id, "user", f"[{user_name} used /affection]\n{affection_instruction}", interaction.user.id, guild_id, user_name=user_name)
     
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            affection_instruction, 
+            f"[{user_name} used /affection]\n{affection_instruction}", 
             interaction.guild, 
             None,
             user_name, 
