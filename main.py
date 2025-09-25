@@ -3261,7 +3261,7 @@ How do you respond in the chat?
 Think about it first.
 
 If you choose to use server emojis in your response, follow the exact format of :emoji: or they won't work! Don't spam them.
-You may react to the users' messages. To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] (for standard emojis) or [REACT: :custom_emoji:] (for custom emojis). No need to react every time.
+You may react to the users' messages. To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] (for standard emojis) or [REACT: :custom_emoji:] (for custom emojis). Do so occasionally, but not every time.
 You can mention a specific user by including <@user_id> in your response, but only do so if they are not currently participating in the conversation, and you want to grab their attention. Otherwise, you don't have to state any names; everyone can deduce to whom you're talking from context alone. Do not include your own name in your response.
 
 {format_instructions}"""
@@ -4091,34 +4091,34 @@ async def send_fun_command_response(interaction: discord.Interaction, response: 
         await send_dismissible_error(interaction.channel, interaction.user, response)
         return
         
-        # Apply the same cleaning pipeline as regular messages
-        guild = interaction.guild
-        
-        # CLEAN BOT NAME PREFIX (remove persona name from output)
-        response = clean_bot_name_prefix(response, guild.id if guild else None, interaction.user.id, isinstance(interaction.channel, discord.DMChannel))
-        
-        # CLEAN EM-DASHES (after bot name cleaning)
-        response = clean_em_dashes(response)
-        
-        # Remove reaction instructions but preserve surrounding spaces
-        reaction_pattern = r'\s*\[REACT:\s*([^\]]+)\]\s*'
-        cleaned_response = re.sub(reaction_pattern, ' ', response).strip()
-        cleaned_response = re.sub(r'  +', ' ', cleaned_response)
-        
-        # CLEAN EMOJIS (after reactions are processed)
-        if cleaned_response:
-            cleaned_response = clean_malformed_emojis(cleaned_response, guild)
-        
-        # Finally sanitize user mentions
-        if cleaned_response and not cleaned_response.startswith("❌"):
-            cleaned_response = sanitize_user_mentions(cleaned_response, guild)
-        
-        # Send as single message
-        if len(cleaned_response) > 4000:
-            for i in range(0, len(cleaned_response), 4000):
-                await interaction.followup.send(cleaned_response[i:i+4000])
-        else:
-            await interaction.followup.send(cleaned_response)
+    # Apply the same cleaning pipeline as regular messages
+    guild = interaction.guild
+    
+    # CLEAN BOT NAME PREFIX (remove persona name from output)
+    response = clean_bot_name_prefix(response, guild.id if guild else None, interaction.user.id, isinstance(interaction.channel, discord.DMChannel))
+    
+    # CLEAN EM-DASHES (after bot name cleaning)
+    response = clean_em_dashes(response)
+    
+    # Remove reaction instructions but preserve surrounding spaces
+    reaction_pattern = r'\s*\[REACT:\s*([^\]]+)\]\s*'
+    cleaned_response = re.sub(reaction_pattern, ' ', response).strip()
+    cleaned_response = re.sub(r'  +', ' ', cleaned_response)
+    
+    # CLEAN EMOJIS (after reactions are processed)
+    if cleaned_response:
+        cleaned_response = clean_malformed_emojis(cleaned_response, guild)
+    
+    # Finally sanitize user mentions
+    if cleaned_response and not cleaned_response.startswith("❌"):
+        cleaned_response = sanitize_user_mentions(cleaned_response, guild)
+    
+    # Send as single message
+    if len(cleaned_response) > 4000:
+        for i in range(0, len(cleaned_response), 4000):
+            await interaction.followup.send(cleaned_response[i:i+4000])
+    else:
+        await interaction.followup.send(cleaned_response)
 
 @client.event
 async def on_message_edit(before: discord.Message, after: discord.Message):
