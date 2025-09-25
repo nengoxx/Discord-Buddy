@@ -1536,36 +1536,37 @@ class RequestQueue:
                 # Send the response
                 message_parts = split_message_by_newlines(bot_response)
                 is_dm = isinstance(message.channel, discord.DMChannel)
+                use_reply = not is_dm and not message.author.bot
                 
                 sent_messages = []
                 if len(message_parts) > 1:
                     for part in message_parts:
                         if len(part) > 4000:
                             for i in range(0, len(part), 4000):
-                                if is_dm:
-                                    sent_msg = await message.channel.send(part[i:i+4000])
-                                else:
+                                if use_reply:
                                     sent_msg = await message.reply(part[i:i+4000])
+                                else:
+                                    sent_msg = await message.channel.send(part[i:i+4000])
                                 sent_messages.append(sent_msg)
                         else:
-                            if is_dm:
-                                sent_msg = await message.channel.send(part)
-                            else:
+                            if use_reply:
                                 sent_msg = await message.reply(part)
+                            else:
+                                sent_msg = await message.channel.send(part)
                             sent_messages.append(sent_msg)
                 elif bot_response:
                     if len(bot_response) > 4000:
                         for i in range(0, len(bot_response), 4000):
-                            if is_dm:
-                                sent_msg = await message.channel.send(bot_response[i:i+4000])
-                            else:
+                            if use_reply:
                                 sent_msg = await message.reply(bot_response[i:i+4000])
+                            else:
+                                sent_msg = await message.channel.send(bot_response[i:i+4000])
                             sent_messages.append(sent_msg)
                     else:
-                        if is_dm:
-                            sent_msg = await message.channel.send(bot_response)
-                        else:
+                        if use_reply:
                             sent_msg = await message.reply(bot_response)
+                        else:
+                            sent_msg = await message.channel.send(bot_response)
                         sent_messages.append(sent_msg)
                 
                 if len(sent_messages) > 1:
@@ -3252,45 +3253,46 @@ You can mention a specific user by including <@user_id> in your response, but on
         except Exception as e:
             print(f"Debug logging error: {e}")
         
-        print("\n" + "="*80)
-        print("🤖 AI REQUEST DEBUG LOG")
-        print("="*80)
-        print(f"📊 Model Provider: {debug_provider}")
-        print(f"🎯 Model: {debug_model}")
-        print(f"🌡️  Temperature: {temperature}")
-        
-        print("\n🎯 SYSTEM PROMPT:")
-        print("-" * 40)
-        print(system_prompt)
-        
-        print("\n📜 MESSAGE HISTORY:")
-        print("-" * 40)
-        for i, msg in enumerate(history):
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+        if not is_dm:
+            print("\n" + "="*80)
+            print("🤖 AI REQUEST DEBUG LOG")
+            print("="*80)
+            print(f"📊 Model Provider: {debug_provider}")
+            print(f"🎯 Model: {debug_model}")
+            print(f"🌡️  Temperature: {temperature}")
             
-            # Clean content for display (remove base64 data)
-            if isinstance(content, list):
-                display_parts = []
-                for part in content:
-                    if isinstance(part, dict):
-                        if part.get("type") == "text":
-                            text = part.get("text", "")
-                            display_parts.append(f"[TEXT: {text[:100]}...]" if len(text) > 100 else f"[TEXT: {text}]")
-                        elif part.get("type") == "image_url":
-                            display_parts.append("[IMAGE]")
-                        elif part.get("type") == "image":
-                            display_parts.append("[IMAGE]")
-                        else:
-                            display_parts.append(f"[{part.get('type', 'unknown').upper()}]")
-                    elif isinstance(part, str):
-                        display_parts.append(part[:100] + "..." if len(part) > 100 else part)
-                display_content = " ".join(display_parts)
-            else:
-                display_content = content[:200] + "..." if isinstance(content, str) and len(content) > 200 else str(content)
+            print("\n🎯 SYSTEM PROMPT:")
+            print("-" * 40)
+            print(system_prompt)
             
-            print(f"[{i+1}] {role.upper()}: {display_content}")
-        print("="*80)
+            print("\n📜 MESSAGE HISTORY:")
+            print("-" * 40)
+            for i, msg in enumerate(history):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                
+                # Clean content for display (remove base64 data)
+                if isinstance(content, list):
+                    display_parts = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                text = part.get("text", "")
+                                display_parts.append(f"[TEXT: {text[:100]}...]" if len(text) > 100 else f"[TEXT: {text}]")
+                            elif part.get("type") == "image_url":
+                                display_parts.append("[IMAGE]")
+                            elif part.get("type") == "image":
+                                display_parts.append("[IMAGE]")
+                            else:
+                                display_parts.append(f"[{part.get('type', 'unknown').upper()}]")
+                        elif isinstance(part, str):
+                            display_parts.append(part[:100] + "..." if len(part) > 100 else part)
+                    display_content = " ".join(display_parts)
+                else:
+                    display_content = content[:200] + "..." if isinstance(content, str) and len(content) > 200 else str(content)
+                
+                print(f"[{i+1}] {role.upper()}: {display_content}")
+            print("="*80)
 
         bot_response = await ai_manager.generate_response(
             messages=history,
@@ -3302,15 +3304,16 @@ You can mention a specific user by including <@user_id> in your response, but on
         )
 
         # ========== RESPONSE DEBUG LOGGING ==========
-        print("\n🤖 AI RESPONSE DEBUG LOG")
-        print("-" * 40)
-        if bot_response:
-            print(f"✅ Response received ({len(bot_response)} chars)")
-            display_response = bot_response if len(bot_response) <= 500 else bot_response[:500] + "...[TRUNCATED]"
-            print(f"📝 Response: {display_response}")
-        else:
-            print("❌ No response received (None)")
-        print("="*80)
+        if not is_dm:
+            print("\n🤖 AI RESPONSE DEBUG LOG")
+            print("-" * 40)
+            if bot_response:
+                print(f"✅ Response received ({len(bot_response)} chars)")
+                display_response = bot_response if len(bot_response) <= 500 else bot_response[:500] + "...[TRUNCATED]"
+                print(f"📝 Response: {display_response}")
+            else:
+                print("❌ No response received (None)")
+            print("="*80)
         # ========== END RESPONSE DEBUG LOGGING ==========
 
         # Check if the response is an error message (API errors or proxy errors)
