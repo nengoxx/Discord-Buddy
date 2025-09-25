@@ -2765,7 +2765,7 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                 continue
                 
             content = message.content.strip()
-            if not content and not message.attachments:
+            if not content and not message.attachments and not message.stickers:
                 continue
                 
             temp_messages.append(message)
@@ -2837,6 +2837,12 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                             if attachment_info:
                                 current_group["content"] += " " + " ".join(attachment_info)
                         
+                        # Handle stickers for grouped message
+                        if message.stickers:
+                            sticker = message.stickers[0]
+                            sticker_info = f"[Sticker: {sticker.name} ({sticker.format.name})]"
+                            current_group["content"] += " " + sticker_info
+                        
                         continue
                 
                 # Start new user group (or finish previous bot message)
@@ -2859,6 +2865,12 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     
                     if attachment_info:
                         final_content += " " + " ".join(attachment_info)
+                
+                # Handle stickers
+                if message.stickers:
+                    sticker = message.stickers[0]
+                    sticker_info = f"[Sticker: {sticker.name} ({sticker.format.name})]"
+                    final_content += " " + sticker_info
                 
                 current_group = {
                     "type": "user",
@@ -3927,14 +3939,21 @@ async def on_message(message: discord.Message):
                     if voice_text:
                         break
 
+    # Process stickers (skip for other bots)
+    sticker_info = None
+    if not is_other_bot and message.stickers:
+        # Get the first sticker (messages can have multiple but usually just one)
+        sticker = message.stickers[0]
+        sticker_info = f"{user_name} sent a sticker: '{sticker.name}' ({sticker.format.name})"
+
     # Determine if bot should respond
     should_respond = False
     
     # EXPLICIT CHECK: Never respond to our own messages (double protection)
     if message.author == client.user:
         should_respond = False
-    # Respond to mentions, DMs, voice messages
-    elif client.user.mentioned_in(message) or is_dm or voice_text:
+    # Respond to mentions, DMs, voice messages, stickers
+    elif client.user.mentioned_in(message) or is_dm or voice_text or sticker_info:
         should_respond = True
     # Autonomous responses (with explicit protection against own messages)
     elif (guild_id and 
@@ -3946,6 +3965,8 @@ async def on_message(message: discord.Message):
         # Handle voice messages privately (only for real users)
         if voice_text and not is_other_bot:
             content = f"{user_name} sent you a voice message, transcript: {voice_text}"
+        elif sticker_info and not is_other_bot:
+            content = sticker_info
         else:
             # For other bots, use their message content directly without removing mentions
             if is_other_bot:
@@ -3955,10 +3976,12 @@ async def on_message(message: discord.Message):
                 bot_display_name = message.guild.me.display_name if message.guild else client.user.display_name
                 content = message.content.replace(f'<@{client.user.id}>', bot_display_name).strip()
                 
-                if not content and not message.attachments and not voice_message_detected:
+                if not content and not message.attachments and not voice_message_detected and not message.stickers:
                     content = "Hello!" if not is_other_bot else f"{user_name} sent a message."
                 elif not content and voice_message_detected and not voice_text and not is_other_bot:
                     content = f"{user_name} sent you a voice message, but I couldn't transcribe it."
+                elif not content and message.stickers and not is_other_bot:
+                    content = sticker_info
 
         # Add to request queue instead of processing immediately
         added = await request_queue.add_request(
@@ -3986,6 +4009,8 @@ async def on_message(message: discord.Message):
                 content_for_history = f"{user_name} sent you a voice message, transcript: {voice_text}"
             elif voice_message_detected and not voice_text and not is_other_bot:
                 content_for_history = f"{user_name} sent you a voice message, but it couldn't be transcribed."
+            elif sticker_info and not is_other_bot:
+                content_for_history = sticker_info
             else:
                 content_for_history = message.content
                 
