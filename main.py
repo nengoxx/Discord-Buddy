@@ -2302,7 +2302,7 @@ async def get_bot_last_logical_message(channel) -> Tuple[List[discord.Message], 
 
 async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None):
     """Add a message to conversation history with proper formatting and image support"""
-    print(f"DEBUG: add_to_history called with role={role}, content={repr(content)}")
+    print(f"DEBUG: add_to_history called with role={role}, content={repr(content)}, user_name={repr(user_name)}, user_id={user_id}, guild_id={guild_id}")
     if channel_id not in conversations:
         conversations[channel_id] = []
 
@@ -2501,8 +2501,8 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
         # Group with previous user message
         if isinstance(conversations[channel_id][-1]["content"], str):
             existing_content = conversations[channel_id][-1]["content"] or ""
-            new_content = content or ""
-            conversations[channel_id][-1]["content"] = existing_content + f"\n{new_content}"
+            if message_content not in existing_content:
+                conversations[channel_id][-1]["content"] = existing_content + f"\n{message_content}"
         else:
             # Don't group if previous message has complex content
             conversations[channel_id].append({"role": role, "content": message_content})
