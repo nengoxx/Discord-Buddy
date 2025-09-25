@@ -3835,9 +3835,6 @@ async def on_message(message: discord.Message):
     if message.author == client.user or message.content.startswith('/'):
         return
     
-    # DEBUG: Log raw message content to investigate duplication
-    # print(f"DEBUG: Received message from {message.author.display_name} in {'DM' if isinstance(message.channel, discord.DMChannel) else 'channel'}: {repr(message.content)}")
-    
     is_dm = isinstance(message.channel, discord.DMChannel)
 
     # Check if DMs are allowed for this user
@@ -3897,14 +3894,21 @@ async def on_message(message: discord.Message):
 
     # Check if this message is a reply to another message
     reply_to_name = None
-    if message.reference and message.reference.resolved:
-        replied_message = message.reference.resolved
-        if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
-            reply_to_name = replied_message.author.display_name
-        elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
-            reply_to_name = replied_message.author.global_name
+    if message.reference:
+        if message.reference.resolved:
+            replied_message = message.reference.resolved
+            if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
+                reply_to_name = replied_message.author.display_name
+            elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
+                reply_to_name = replied_message.author.global_name
+            else:
+                reply_to_name = replied_message.author.name
         else:
-            reply_to_name = replied_message.author.name
+            # DEBUG: Log when reference exists but not resolved (servers only)
+            if not is_dm:
+                print(f"DEBUG: Message has reference but not resolved: {message.reference}")
+    elif not is_dm:
+        print(f"DEBUG: Message is not a reply")
 
     guild_id = message.guild.id if message.guild else None
 
