@@ -2570,6 +2570,9 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
         for message in temp_messages:
             content = message.content.strip()
             
+            # DEBUG: Log message content when loading from history
+            print(f"DEBUG: Loading message from {message.author.display_name} in history: {repr(content)}")
+            
             if message.author == client.user:
                 # Bot message
                 if current_group and current_group["type"] == "bot":
@@ -2866,7 +2869,7 @@ def split_message_by_newlines(message: str) -> List[str]:
 
 async def generate_response(channel_id: int, user_message: str, guild: discord.Guild = None, attachments: List[discord.Attachment] = None, user_name: str = None, is_dm: bool = False, user_id: int = None, original_message: discord.Message = None) -> str:
     """Generate response using the AI Provider Manager"""
-    print(f"🔍 DEBUG: generate_response called with channel_id={channel_id}, is_dm={is_dm}, user_id={user_id}")
+    print(f"DEBUG: generate_response called with user_message: {repr(user_message)}")
     try:
         guild_id = guild.id if guild else None
 
@@ -2900,6 +2903,9 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                 # Load all DM history (this already adds the current message to history)
                 full_history = await load_all_dm_history(original_message.channel, user_id, guild)
                 history = get_conversation_history(channel_id)
+                print(f"DEBUG: After loading full history, history has {len(history)} messages")
+                for i, msg in enumerate(history):
+                    print(f"DEBUG: History[{i}]: {msg['role']} - {repr(msg['content'])}")
                     
             except Exception as e:
                 print(f"Error loading full DM history: {e}")
@@ -3009,9 +3015,6 @@ You can mention a specific user by including <@user_id> in your response, but on
 
 {format_instructions}"""})
 
-        print(f"🔍 DEBUG: About to print main debug logging...")
-        print("🔍 DEBUG: ENTERING DEBUG LOGGING SECTION")
-        print("🔍 DEBUG: Starting debug logging section...")
         # ========== DEBUG LOGGING ==========
         # Get current provider and model settings for logging
         debug_provider = "unknown"
@@ -3522,6 +3525,9 @@ async def on_message(message: discord.Message):
     # Skip ONLY this bot's own messages and commands
     if message.author == client.user or message.content.startswith('/'):
         return
+    
+    # DEBUG: Log raw message content to investigate duplication
+    print(f"DEBUG: Received message from {message.author.display_name} in {'DM' if isinstance(message.channel, discord.DMChannel) else 'channel'}: {repr(message.content)}")
     
     is_dm = isinstance(message.channel, discord.DMChannel)
 
