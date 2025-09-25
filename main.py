@@ -33,6 +33,7 @@ import warnings
 logging.getLogger('discord').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message="Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work", category=RuntimeWarning)
 
 # Only show critical errors
 logging.basicConfig(level=logging.CRITICAL)
