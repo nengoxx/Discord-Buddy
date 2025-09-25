@@ -5,7 +5,6 @@
 import datetime
 import speech_recognition as sr
 import io
-from pydub import AudioSegment
 import tempfile
 import discord
 from discord import app_commands
@@ -29,11 +28,15 @@ import time
 import logging
 import warnings
 
+# Suppress warnings BEFORE importing pydub
+warnings.filterwarnings("ignore", message="Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work", category=RuntimeWarning)
+
+from pydub import AudioSegment
+
 # Suppress Discord connection warnings/errors
 logging.getLogger('discord').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", message="Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work", category=RuntimeWarning)
 
 # Only show critical errors
 logging.basicConfig(level=logging.CRITICAL)
@@ -1446,8 +1449,7 @@ class RequestQueue:
                 if bot_response and guild:
                     bot_response = clean_malformed_emojis(bot_response, guild)
 
-                # ADD THE ORIGINAL RESPONSE (WITH REACTIONS) TO HISTORY
-                await add_to_history(channel_id, "assistant", original_response_with_reactions, guild_id=guild.id if guild else None)
+                # Assistant response is already added to history in generate_response()
                 
                 # Finally sanitize user mentions
                 if bot_response and not bot_response.startswith("❌"):
@@ -2775,7 +2777,7 @@ Here are some important rules you must always follow:
 
     system_prompt += """
 
-Here is the conversation history (between the users and you). It could be empty if there's none yet:
+Here is the conversation history (between the users and you):
 <history>"""
 
     # Now replace the dynamic placeholders with actual data
@@ -2985,14 +2987,12 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             format_instructions = "In your response, write narrative roleplay. Apply plain text for narration and \"quotation marks\" for dialogues. Never use em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell. Keep your response's length between one to three paragraphs long."
 
         # Append the system messages to complete the structure
-        history.append({"role": "system", "content": """</history>
+        history.append({"role": "system", "content": f"""</history>
 
 Here is the last message in the conversation:
-<message>"""})
-        
-        history.append({"role": "user", "content": last_user_message})
-        
-        history.append({"role": "system", "content": f"""</message>
+<message>
+{last_user_message}
+</message>
 
 How do you respond in the chat?
 
