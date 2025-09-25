@@ -155,7 +155,6 @@ class ClaudeProvider(AIProvider):
                 return f"❌ Claude API error: {response_text}"
             
             # Clean any base64 data from the response
-            import re
             response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
             response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
             
@@ -266,7 +265,6 @@ class GeminiProvider(AIProvider):
                     return f"❌ Gemini API error: {response.text}"
                 
                 # Clean any base64 data from the response
-                import re
                 clean_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response.text)
                 clean_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', clean_text)
                 return clean_text
@@ -289,7 +287,6 @@ class GeminiProvider(AIProvider):
                                 return f"❌ Gemini API error: {response_text}"
                             
                             # Clean any base64 data from the response
-                            import re
                             response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
                             response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
                             return response_text
@@ -412,7 +409,6 @@ class OpenAIProvider(AIProvider):
                 return f"❌ OpenAI API error: {response_text}"
             
             # Clean any base64 data from the response
-            import re
             response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
             response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
             
@@ -687,7 +683,6 @@ class CustomProvider(AIProvider):
                 return f"❌ Custom API error: {response_text}"
             
             # Clean any base64 data from the response
-            import re
             response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
             response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
             
@@ -1716,7 +1711,6 @@ def check_admin_permissions(interaction: discord.Interaction) -> bool:
 
 def convert_emojis_to_simple(text: str) -> str:
     """Convert full Discord emoji format <:name:id> to simple :name: format for AI learning"""
-    import re
     
     # Pattern for animated and static emojis: <a:name:id> or <:name:id>
     emoji_pattern = r'<a?:([a-zA-Z0-9_]+):\d+>'
@@ -2706,18 +2700,14 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
         last_message = conversations[channel_id][-1]
         
         if (last_message["role"] == role and 
-            isinstance(last_message["content"], str) and  # Only group with text messages
-            ((role == "user" and user_id and 
-            last_message["content"].startswith(f"{user_name}:")) or
-            (role == "assistant"))):
+            isinstance(last_message["content"], str)):  # Only group with text messages
             should_group = True
 
     if should_group and role == "user" and isinstance(message_content, str):
-        # Group with previous user message
+        # Group with previous user message (all consecutive user messages get grouped)
         if isinstance(conversations[channel_id][-1]["content"], str):
             existing_content = conversations[channel_id][-1]["content"] or ""
-            if message_content not in existing_content:
-                conversations[channel_id][-1]["content"] = existing_content + f"\n{message_content}"
+            conversations[channel_id][-1]["content"] = existing_content + f"\n{message_content}"
         else:
             # Don't group if previous message has complex content
             # Ensure we store text-only in history
@@ -2839,13 +2829,44 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     "message_count": 1
                 }
             else:
-                # User message - always separate (finish any bot group first)
+                # User message - group ALL consecutive user messages together
+                if current_group and current_group["type"] == "user":
+                    # Check if this message is within a reasonable time window of the previous message
+                    time_diff = abs((message.created_at - current_group["last_timestamp"]).total_seconds())
+                    if time_diff <= 300:  # 5 minutes window for grouping consecutive messages
+                        # Add to existing user group
+                        author_name = message.author.display_name or message.author.name
+                        if current_group["content"]:
+                            current_group["content"] += f"\n{author_name}: {content}"
+                        else:
+                            current_group["content"] = f"{author_name}: {content}"
+                        current_group["last_timestamp"] = message.created_at
+                        current_group["message_count"] += 1
+                        
+                        # Handle attachments for grouped message
+                        if message.attachments:
+                            attachment_info = []
+                            for attachment in message.attachments:
+                                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                                    attachment_info.append(f"[Image: {attachment.filename}]")
+                                elif any(attachment.filename.lower().endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.m4a', '.webm']):
+                                    attachment_info.append(f"[Voice message: {attachment.filename}]")
+                                else:
+                                    attachment_info.append(f"[File: {attachment.filename}]")
+                            
+                            if attachment_info:
+                                current_group["content"] += " " + " ".join(attachment_info)
+                        
+                        continue
+                
+                # Start new user group (or finish previous bot message)
                 if current_group:
                     grouped_messages.append(current_group)
                     current_group = None
                 
                 # Handle attachments
-                final_content = content
+                author_name = message.author.display_name or message.author.name
+                final_content = f"{author_name}: {content}"
                 if message.attachments:
                     attachment_info = []
                     for attachment in message.attachments:
@@ -2859,13 +2880,13 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     if attachment_info:
                         final_content += " " + " ".join(attachment_info)
                 
-                grouped_messages.append({
+                current_group = {
                     "type": "user",
                     "content": final_content,
-                    "author_id": message.author.id,
+                    "author_id": message.author.id,  # Keep track of the first author
                     "last_timestamp": message.created_at,
                     "message_count": 1
-                })
+                }
         
         # Don't forget the last group
         if current_group:
@@ -3359,7 +3380,6 @@ You can mention a specific user by including <@user_id> in your response, but on
 
         # Clean any base64 data from the response (AI sometimes returns input data)
         if bot_response:
-            import re
             # Remove base64 data patterns (data:image/...;base64,...)
             bot_response = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', bot_response)
             # Also remove standalone long base64 strings
