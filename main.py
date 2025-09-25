@@ -1635,6 +1635,19 @@ def check_admin_permissions(interaction: discord.Interaction) -> bool:
         return False
     return interaction.user.guild_permissions.administrator
 
+def convert_emojis_to_simple(text: str) -> str:
+    """Convert full Discord emoji format <:name:id> to simple :name: format for AI learning"""
+    import re
+    
+    # Pattern for animated and static emojis: <a:name:id> or <:name:id>
+    emoji_pattern = r'<a?:([a-zA-Z0-9_]+):\d+>'
+    
+    def replace_emoji(match):
+        emoji_name = match.group(1)
+        return f":{emoji_name}:"
+    
+    return re.sub(emoji_pattern, replace_emoji, text)
+
 def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     """Convert :emoji_name: format to proper Discord format or remove invalid ones"""
     
@@ -2345,14 +2358,25 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
             else:
                 # Convert bot mentions to display names for better readability
                 clean_content = convert_bot_mentions_to_names(content, guild_obj) if guild_id else content
-                formatted_content = f"{user_name} (<@{user_id}>): {clean_content}"
+                formatted_content = f"{user_name}: {clean_content}"
     else:
-        # For assistant messages, also convert bot mentions to names
+        # For assistant messages, format with bot's persona name
+        bot_name = get_bot_persona_name(guild_id, user_id, not guild_id)
+        
+        # Clean the AI response by removing any "NAME: " prefix if present
+        clean_content = content
+        if content.startswith(f"{bot_name}: "):
+            clean_content = content[len(f"{bot_name}: "):]
+        elif content.startswith(f"{bot_name}:"):
+            clean_content = content[len(f"{bot_name}:"):]
+        
+        # Convert bot mentions to names and apply emoji conversion
         if guild_id:
             guild_obj = client.get_guild(guild_id)
-            formatted_content = convert_bot_mentions_to_names(content, guild_obj) if guild_obj else content
-        else:
-            formatted_content = content
+            clean_content = convert_bot_mentions_to_names(clean_content, guild_obj) if guild_obj else clean_content
+        clean_content = convert_emojis_to_simple(clean_content)
+        
+        formatted_content = f"{bot_name}: {clean_content}"
 
     # Ensure formatted_content is not None
     if formatted_content is None:
@@ -2493,7 +2517,7 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
         if (last_message["role"] == role and 
             isinstance(last_message["content"], str) and  # Only group with text messages
             ((role == "user" and user_id and 
-            last_message["content"].startswith(f"{user_name} (<@{user_id}>):")) or
+            last_message["content"].startswith(f"{user_name}:")) or
             (role == "assistant"))):
             should_group = True
 
@@ -2831,7 +2855,7 @@ Here is the conversation history (between the users and you):
                 if user_lore:
                     member = guild_obj.get_member(user_id_in_convo)
                     if member:
-                        lore_entries.append(f"• About {member.display_name}: {user_lore}")
+                        lore_entries.append(f"• About {member.display_name} <@{user_id_in_convo}>: {user_lore}")
             
             # Add channel context
             channel_obj = guild_obj.get_channel(channel_id)
