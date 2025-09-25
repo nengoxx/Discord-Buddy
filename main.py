@@ -3894,21 +3894,14 @@ async def on_message(message: discord.Message):
 
     # Check if this message is a reply to another message
     reply_to_name = None
-    if message.reference:
-        if message.reference.resolved:
-            replied_message = message.reference.resolved
-            if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
-                reply_to_name = replied_message.author.display_name
-            elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
-                reply_to_name = replied_message.author.global_name
-            else:
-                reply_to_name = replied_message.author.name
+    if message.reference and message.reference.resolved:
+        replied_message = message.reference.resolved
+        if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
+            reply_to_name = replied_message.author.display_name
+        elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
+            reply_to_name = replied_message.author.global_name
         else:
-            # DEBUG: Log when reference exists but not resolved (servers only)
-            if not is_dm:
-                print(f"DEBUG: Message has reference but not resolved: {message.reference}")
-    elif not is_dm:
-        print(f"DEBUG: Message is not a reply")
+            reply_to_name = replied_message.author.name
 
     guild_id = message.guild.id if message.guild else None
 
