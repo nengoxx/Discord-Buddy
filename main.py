@@ -3952,8 +3952,8 @@ async def on_message(message: discord.Message):
     # EXPLICIT CHECK: Never respond to our own messages (double protection)
     if message.author == client.user:
         should_respond = False
-    # Respond to mentions, DMs, voice messages, stickers
-    elif client.user.mentioned_in(message) or is_dm or voice_text or sticker_info:
+    # Respond to mentions, DMs, voice messages
+    elif client.user.mentioned_in(message) or is_dm or voice_text:
         should_respond = True
     # Autonomous responses (with explicit protection against own messages)
     elif (guild_id and 
