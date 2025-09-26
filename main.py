@@ -91,6 +91,7 @@ SERVER_FORMAT_DEFAULTS_FILE = os.path.join(DATA_DIR, "server_format_defaults.jso
 NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "nsfw_settings.json")
 DM_NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_nsfw_settings.json")
 CUSTOM_FORMAT_INSTRUCTIONS_FILE = os.path.join(DATA_DIR, "custom_format_instructions.json")
+PREFILL_SETTINGS_FILE = os.path.join(DATA_DIR, "prefill_settings.json")
 
 # Files for old prompt system - TO BE REMOVED
 CUSTOM_PROMPTS_FILE = os.path.join(DATA_DIR, "custom_prompts.json")
@@ -1739,6 +1740,25 @@ def convert_emojis_to_simple(text: str) -> str:
     
     return re.sub(emoji_pattern, replace_emoji, text)
 
+def remove_thinking_tags(text: str) -> str:
+    """Remove thinking tags and their content from AI responses"""
+    if not text:
+        return text
+    
+    # Remove thinking tags with various formats: <thinking>, <think>, etc.
+    # This regex removes the opening tag, content, and closing tag
+    thinking_pattern = r'<(\w*think\w*)[^>]*>.*?</\1>'
+    text = re.sub(thinking_pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Also remove self-closing thinking tags
+    text = re.sub(r'<(\w*think\w*)[^>]*/>', '', text, flags=re.IGNORECASE)
+    
+    # Clean up extra whitespace
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    text = text.strip()
+    
+    return text
+
 def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     """Convert :emoji_name: format to proper Discord format or remove invalid ones"""
     
@@ -1908,6 +1928,7 @@ server_format_defaults: Dict[int, str] = load_json_data(SERVER_FORMAT_DEFAULTS_F
 guild_nsfw_settings: Dict[int, bool] = load_json_data(NSFW_SETTINGS_FILE)
 dm_nsfw_settings: Dict[int, bool] = load_json_data(DM_NSFW_SETTINGS_FILE)
 custom_format_instructions: Dict[str, str] = load_json_data(CUSTOM_FORMAT_INSTRUCTIONS_FILE, convert_keys=False)
+prefill_settings: Dict[int, str] = load_json_data(PREFILL_SETTINGS_FILE)
 multipart_responses: Dict[int, Dict[int, Tuple[List[int], str]]] = {}
 multipart_response_counter: Dict[int, int] = {}
 guild_personalities: Dict[int, str] = {}
@@ -3201,6 +3222,10 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
         if history and history[-1].get("role") == "user":
             history[-1]["content"] = message_content
 
+        # Add prefill if one is set for this channel
+        if channel_id in prefill_settings and prefill_settings[channel_id]:
+            history.append({"role": "assistant", "content": prefill_settings[channel_id]})
+
         # Get system prompt with username for DMs
         system_prompt = get_system_prompt(guild_id, guild, user_message, channel_id, is_dm, user_id, user_name, history)
 
@@ -3392,6 +3417,10 @@ You can mention a specific user by including <@user_id> in your response, but on
             bot_response = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', bot_response)
             # Also remove standalone long base64 strings
             bot_response = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', bot_response)
+
+        # Remove thinking tags from reasoning models
+        if bot_response:
+            bot_response = remove_thinking_tags(bot_response)
 
         # Clean malformed emojis
         if bot_response and guild:
@@ -4803,7 +4832,9 @@ async def help_command(interaction: discord.Interaction):
         value="`/clear` - Clear conversation history on the specific channel/DM\n"
             "`/activity <type> <text>` - Set bot activity\n"
             "`/status_set <status>` - Set bot online status\n"
-            "`/delete_messages <number>` - Delete bot's last N messages",
+            "`/delete_messages <number>` - Delete bot's last N messages\n"
+            "`/add_prefill <text>` - Add a prefill message for conversations\n"
+            "`/clear_prefill` - Remove the prefill message",
         inline=False
     )
 
@@ -5721,6 +5752,31 @@ async def set_status(interaction: discord.Interaction, status: str):
         await interaction.followup.send(f"Status set to: **{status.title()}** 🔵")
     except Exception as e:
         await interaction.followup.send(f"Failed to set status: {str(e)}")
+
+@tree.command(name="add_prefill", description="Add a prefill message that appears as the bot's last response in conversations")
+async def add_prefill_command(interaction: discord.Interaction, prefill_text: str):
+    """Add a prefill message that will be included as the bot's last response in conversation history"""
+    await interaction.response.defer(ephemeral=True)
+    
+    # Store the prefill for this channel
+    prefill_settings[interaction.channel.id] = prefill_text
+    
+    # Save to file
+    save_json_data(PREFILL_SETTINGS_FILE, prefill_settings)
+    
+    await interaction.followup.send(f"✅ Prefill set for this channel!\n\n**Prefill text:** {prefill_text}\n\nThe bot will now include this as its last response in conversations. Use `/clear_prefill` to remove it.")
+
+@tree.command(name="clear_prefill", description="Remove the prefill message for this channel")
+async def clear_prefill_command(interaction: discord.Interaction):
+    """Remove the prefill message for this channel"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if interaction.channel.id in prefill_settings:
+        del prefill_settings[interaction.channel.id]
+        save_json_data(PREFILL_SETTINGS_FILE, prefill_settings)
+        await interaction.followup.send("✅ Prefill removed for this channel!")
+    else:
+        await interaction.followup.send("❌ No prefill is currently set for this channel.")
 
 @tree.command(name="bot_name_set", description="Change the bot's display name (Admin only)")
 async def set_bot_name(interaction: discord.Interaction, new_name: str):
