@@ -1535,6 +1535,22 @@ class RequestQueue:
                 if bot_response is None:
                     return
                 
+                # Add a small delay to make responses feel more human-like
+                await asyncio.sleep(1.0)
+                
+                # Check if the response is an error that should be temporary
+                is_temp_error = bot_response.startswith("[TEMP_ERROR]")
+                if is_temp_error:
+                    bot_response = bot_response.replace("[TEMP_ERROR] ", "")
+                    # Send as dismissible error instead of regular message
+                    try:
+                        await send_dismissible_error(message.channel, message.author, bot_response)
+                        print(f"Sent dismissible error response: {bot_response[:100]}...")
+                        return  # Don't continue with normal message sending
+                    except Exception as send_error:
+                        print(f"Failed to send dismissible error response: {send_error}")
+                        # Continue with normal message sending as fallback
+                
                 # Send the response
                 message_parts = split_message_by_newlines(bot_response)
                 is_dm = isinstance(message.channel, discord.DMChannel)
@@ -1546,29 +1562,29 @@ class RequestQueue:
                         if len(part) > 4000:
                             for i in range(0, len(part), 4000):
                                 if use_reply:
-                                    sent_msg = await message.reply(part[i:i+4000])
+                                    sent_msg = await message.reply(part[i:i+4000], delete_after=15.0 if is_temp_error else None)
                                 else:
-                                    sent_msg = await message.channel.send(part[i:i+4000])
+                                    sent_msg = await message.channel.send(part[i:i+4000], delete_after=15.0 if is_temp_error else None)
                                 sent_messages.append(sent_msg)
                         else:
                             if use_reply:
-                                sent_msg = await message.reply(part)
+                                sent_msg = await message.reply(part, delete_after=15.0 if is_temp_error else None)
                             else:
-                                sent_msg = await message.channel.send(part)
+                                sent_msg = await message.channel.send(part, delete_after=15.0 if is_temp_error else None)
                             sent_messages.append(sent_msg)
                 elif bot_response:
                     if len(bot_response) > 4000:
                         for i in range(0, len(bot_response), 4000):
                             if use_reply:
-                                sent_msg = await message.reply(bot_response[i:i+4000])
+                                sent_msg = await message.reply(bot_response[i:i+4000], delete_after=15.0 if is_temp_error else None)
                             else:
-                                sent_msg = await message.channel.send(bot_response[i:i+4000])
+                                sent_msg = await message.channel.send(bot_response[i:i+4000], delete_after=15.0 if is_temp_error else None)
                             sent_messages.append(sent_msg)
                     else:
                         if use_reply:
-                            sent_msg = await message.reply(bot_response)
+                            sent_msg = await message.reply(bot_response, delete_after=15.0 if is_temp_error else None)
                         else:
-                            sent_msg = await message.channel.send(bot_response)
+                            sent_msg = await message.channel.send(bot_response, delete_after=15.0 if is_temp_error else None)
                         sent_messages.append(sent_msg)
                 
                 if len(sent_messages) > 1:
@@ -1581,9 +1597,39 @@ class RequestQueue:
                 # Truncate error message to stay under Discord's 4000 character limit
                 if len(error_msg) > 3950:  # Leave some buffer
                     error_msg = error_msg[:3950] + "..."
-                return error_msg
-            except Exception:
-                return "❌ Sorry, I encountered an error processing your request."
+                
+                # Check if this is a Discord API error that should be ephemeral/temporary
+                is_api_error = ("400 Bad Request" in str(e) or 
+                               "error code" in str(e) or 
+                               "50035" in str(e) or
+                               "Invalid Form Body" in str(e))
+                
+                if is_api_error:
+                    # Send as dismissible error message
+                    try:
+                        await send_dismissible_error(message.channel, message.author, error_msg)
+                        print(f"Sent dismissible error message: {error_msg[:100]}...")
+                    except Exception as send_error:
+                        print(f"Failed to send dismissible error message: {send_error}")
+                        # Fallback to regular temporary message
+                        try:
+                            temp_msg = await message.channel.send(error_msg, delete_after=15.0)
+                        except Exception as fallback_error:
+                            print(f"Failed to send fallback error message: {fallback_error}")
+                else:
+                    # Send regular error message
+                    try:
+                        await message.channel.send(error_msg)
+                    except Exception as send_error:
+                        print(f"Failed to send error message: {send_error}")
+                        
+            except Exception as inner_e:
+                print(f"Error in error handling: {inner_e}")
+                try:
+                    fallback_msg = "❌ Sorry, I encountered an error processing your request."
+                    await message.channel.send(fallback_msg)
+                except Exception as fallback_error:
+                    print(f"Failed to send fallback error message: {fallback_error}")
 
 # Initialize the request queue
 request_queue = RequestQueue()
@@ -3448,6 +3494,17 @@ You can mention a specific user by including <@user_id> in your response, but on
         # Truncate error message to stay under Discord's 4000 character limit
         if len(error_msg) > 3950:  # Leave some buffer
             error_msg = error_msg[:3950] + "..."
+        
+        # Check if this is a Discord API error that should be handled specially
+        is_api_error = ("400 Bad Request" in str(e) or 
+                       "error code" in str(e) or 
+                       "50035" in str(e) or
+                       "Invalid Form Body" in str(e))
+        
+        if is_api_error:
+            # Mark this as a temporary error that should be handled by the caller
+            error_msg = f"[TEMP_ERROR] {error_msg}"
+        
         return error_msg
 
 async def generate_memory_summary(channel_id: int, num_messages: int, guild: discord.Guild = None, user_id: int = None, username: str = None) -> str:
@@ -4170,8 +4227,10 @@ async def send_fun_command_response(interaction: discord.Interaction, response: 
     # Send as single message
     if len(cleaned_response) > 4000:
         for i in range(0, len(cleaned_response), 4000):
+            await asyncio.sleep(1.0)  # Add human-like delay
             await interaction.followup.send(cleaned_response[i:i+4000])
     else:
+        await asyncio.sleep(1.0)  # Add human-like delay
         await interaction.followup.send(cleaned_response)
 
 @client.event
