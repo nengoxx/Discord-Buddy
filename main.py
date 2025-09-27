@@ -5,7 +5,6 @@
 import datetime
 import speech_recognition as sr
 import io
-from pydub import AudioSegment
 import tempfile
 import discord
 from discord import app_commands
@@ -14,7 +13,7 @@ import asyncio
 import json
 import os
 from dotenv import load_dotenv
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Optional
 import aiohttp
 import random
 import re
@@ -24,12 +23,15 @@ from google import genai
 from google.genai import types # type: ignore
 import openai
 from openai import AsyncOpenAI
-import asyncio
 from collections import defaultdict
-from typing import Dict, List, Optional
 import time
 import logging
 import warnings
+
+# Suppress warnings BEFORE importing pydub
+warnings.filterwarnings("ignore", message="Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work", category=RuntimeWarning)
+
+from pydub import AudioSegment
 
 # Suppress Discord connection warnings/errors
 logging.getLogger('discord').setLevel(logging.CRITICAL)
@@ -64,8 +66,8 @@ tree = app_commands.CommandTree(client)
 DATA_DIR = "bot_data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-PROMPT_SETTINGS_FILE = os.path.join(DATA_DIR, "prompt_settings.json")
-DM_PROMPT_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_prompt_settings.json")
+# Remove/replace existing prompt-related file paths and variables
+
 DM_TOGGLE_FILE = os.path.join(DATA_DIR, "dm_toggle.json")
 DM_LAST_INTERACTION_FILE = os.path.join(DATA_DIR, "dm_last_interaction.json")
 DM_LORE_FILE = os.path.join(DATA_DIR, "dm_lore.json")
@@ -79,10 +81,21 @@ MEMORIES_FILE = os.path.join(DATA_DIR, "memories.json")
 TEMPERATURE_FILE = os.path.join(DATA_DIR, "temperature.json")
 WELCOME_SENT_FILE = os.path.join(DATA_DIR, "welcome_sent.json")
 DM_SERVER_SELECTION_FILE = os.path.join(DATA_DIR, "dm_server_selection.json")
-SERVER_PROMPT_DEFAULTS_FILE = os.path.join(DATA_DIR, "server_prompt_defaults.json")
 DM_ENABLED_FILE = os.path.join(DATA_DIR, "dm_enabled.json")
 VISION_CACHE_FILE = os.path.join(DATA_DIR, "vision_cache.json")
+
+# New format settings files
+FORMAT_SETTINGS_FILE = os.path.join(DATA_DIR, "format_settings.json")
+DM_FORMAT_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_format_settings.json")
+SERVER_FORMAT_DEFAULTS_FILE = os.path.join(DATA_DIR, "server_format_defaults.json")
+NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "nsfw_settings.json")
+DM_NSFW_SETTINGS_FILE = os.path.join(DATA_DIR, "dm_nsfw_settings.json")
+CUSTOM_FORMAT_INSTRUCTIONS_FILE = os.path.join(DATA_DIR, "custom_format_instructions.json")
+PREFILL_SETTINGS_FILE = os.path.join(DATA_DIR, "prefill_settings.json")
+
+# Files for old prompt system - TO BE REMOVED
 CUSTOM_PROMPTS_FILE = os.path.join(DATA_DIR, "custom_prompts.json")
+# Removed: PROMPT_SETTINGS_FILE and DM_PROMPT_SETTINGS_FILE - no longer needed
 
 # AI Provider Classes
 class AIProvider(ABC):
@@ -131,12 +144,29 @@ class ClaudeProvider(AIProvider):
                 messages=messages,
                 stream=False
             )
-            return response.content[0].text
+            
+            response_text = response.content[0].text
+            
+            # Check if the response contains proxy or API errors
+            if any(error_indicator in response_text.lower() for error_indicator in [
+                "proxy error", "upstream connect error", "connection termination", 
+                "service unavailable", "context size limit", "request validation failed",
+                "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+            ]):
+                return f"❌ Claude API error: {response_text}"
+            
+            # Clean any base64 data from the response
+            response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
+            response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
+            
+            return response_text
         except Exception as e:
             return f"❌ Claude API error: {str(e)}"
     
     def get_available_models(self) -> List[str]:
         return [
+            "claude-opus-4-1",   # Vision support
+            "claude-opus-4",     # Vision support
             "claude-opus-4-0",
             "claude-sonnet-4-0", 
             "claude-3-7-sonnet-latest",
@@ -227,7 +257,18 @@ class GeminiProvider(AIProvider):
             )
             
             if hasattr(response, 'text') and response.text:
-                return response.text
+                # Check if the response contains proxy or API errors
+                if any(error_indicator in response.text.lower() for error_indicator in [
+                    "proxy error", "upstream connect error", "connection termination", 
+                    "service unavailable", "context size limit", "request validation failed",
+                    "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+                ]):
+                    return f"❌ Gemini API error: {response.text}"
+                
+                # Clean any base64 data from the response
+                clean_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response.text)
+                clean_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', clean_text)
+                return clean_text
             elif hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
                 if hasattr(candidate, 'content') and candidate.content:
@@ -237,7 +278,19 @@ class GeminiProvider(AIProvider):
                             if hasattr(part, 'text'):
                                 text_parts.append(part.text)
                         if text_parts:
-                            return "".join(text_parts)
+                            response_text = "".join(text_parts)
+                            # Check if the response contains proxy or API errors
+                            if any(error_indicator in response_text.lower() for error_indicator in [
+                                "proxy error", "upstream connect error", "connection termination", 
+                                "service unavailable", "context size limit", "request validation failed",
+                                "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+                            ]):
+                                return f"❌ Gemini API error: {response_text}"
+                            
+                            # Clean any base64 data from the response
+                            response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
+                            response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
+                            return response_text
                             
                 if hasattr(candidate, 'finish_reason'):
                     if candidate.finish_reason == "SAFETY":
@@ -323,7 +376,7 @@ class OpenAIProvider(AIProvider):
                     formatted_messages.append({"role": role, "content": content})
             
             # Check if model supports vision
-            vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-vision-preview", "gpt-4.1", "gpt-4.1-mini"]
+            vision_models = ["gpt-5", "gpt-5-chat-latest", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-vision-preview", "gpt-4.1", "gpt-4.1-mini"]
             supports_vision = any(vision_model in model.lower() for vision_model in vision_models)
             
             # If model doesn't support vision but we have images, convert them to text descriptions
@@ -346,13 +399,29 @@ class OpenAIProvider(AIProvider):
                 stream=False
             )
             
-            return response.choices[0].message.content
+            response_text = response.choices[0].message.content
+            
+            # Check if the response contains proxy or API errors
+            if any(error_indicator in response_text.lower() for error_indicator in [
+                "proxy error", "upstream connect error", "connection termination", 
+                "service unavailable", "context size limit", "request validation failed",
+                "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+            ]):
+                return f"❌ OpenAI API error: {response_text}"
+            
+            # Clean any base64 data from the response
+            response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
+            response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
+            
+            return response_text
             
         except Exception as e:
             return f"❌ OpenAI API error: {str(e)}"
     
     def get_available_models(self) -> List[str]:
         return [
+            "gpt-5",             # Vision support
+            "gpt-5-chat-latest", # Vision support
             "gpt-4.1",           # Vision support
             "gpt-4.1-mini",      # Vision support  
             "gpt-4.1-nano",      # Vision support
@@ -375,8 +444,9 @@ class OpenAIProvider(AIProvider):
     def supports_vision(self, model: str) -> bool:
         """Check if a model supports vision/images"""
         vision_models = [
-            "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-vision-preview", 
-            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o3-preview", "gpt-4"
+            "gpt-5", "gpt-5-chat-latest", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", 
+            "gpt-4-vision-preview", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", 
+            "o3-preview", "gpt-4"
         ]
         return any(vision_model in model.lower() for vision_model in vision_models)
 
@@ -403,14 +473,6 @@ class CustomProvider(AIProvider):
             pass
         return {}
     
-    def save_vision_cache(self):
-        """Save vision support cache to file"""
-        try:
-            with open(VISION_CACHE_FILE, 'w') as f:
-                json.dump(self._vision_cache, f, indent=2)
-        except Exception:
-            pass
-
     def save_vision_cache(self):
         """Save vision support cache to file with error handling"""
         try:
@@ -610,7 +672,22 @@ class CustomProvider(AIProvider):
                 max_tokens=max_tokens,
                 stream=False
             )
-            return response.choices[0].message.content
+            
+            response_text = response.choices[0].message.content
+            
+            # Check if the response contains proxy or API errors
+            if any(error_indicator in response_text.lower() for error_indicator in [
+                "proxy error", "upstream connect error", "connection termination", 
+                "service unavailable", "context size limit", "request validation failed",
+                "tokens.*exceeds", "http 503", "http 400", "http 429", "rate limit", "timeout"
+            ]):
+                return f"❌ Custom API error: {response_text}"
+            
+            # Clean any base64 data from the response
+            response_text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', response_text)
+            response_text = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', response_text)
+            
+            return response_text
         
         except Exception as e:
             return f"❌ Custom API error: {str(e)}"
@@ -730,6 +807,22 @@ class AIProviderManager:
             # No guild context and no provider
             return "❌ No AI provider is configured. Please contact the bot administrator to set up API keys."
         
+        # ========== PROVIDER DEBUG LOGGING ==========
+        print(f"\n🔌 PROVIDER MANAGER DEBUG:")
+        print(f"   Provider: {provider_name}")
+        print(f"   Model: {model_name}")
+        print(f"   Max Tokens: {max_tokens}")
+        print(f"   Messages to send: {len(messages)}")
+        
+        # Log the exact payload being sent to provider
+        if provider_name == "custom":
+            url_guild_id = dm_server_selection.get(user_id) if is_dm and user_id in dm_server_selection else guild_id
+            custom_url = self.get_guild_custom_url(url_guild_id) if url_guild_id else "http://localhost:1234/v1"
+            print(f"   Custom URL: {custom_url}")
+        
+        print("   📦 Sending to AI provider...")
+        # ========== END PROVIDER DEBUG LOGGING ==========
+
         # Handle custom provider with cached instances
         if provider_name == "custom":
             # For DMs, use the selected server's custom URL, otherwise use current guild
@@ -782,145 +875,15 @@ class AIProviderManager:
 # Initialize AI Provider Manager
 ai_manager = AIProviderManager()
 
-# System prompts
-CONVERSATIONAL_SYSTEM_PROMPT = """Chat with different users on a Discord server, autonomously messaging in a group convo. Have fun!
+# Remove all existing system prompts - they will be replaced with the new structure
 
-<instructions>You must always follow these instructions:
-- Never employ em-dashes or asterisks for actions, e.g., *does something*, they are cringeworthy and absolutely forbidden.
-- Use conversational language with internet vocabulary and different emojis.
-- Mention specific users only if they're not currently responding to you by sending <@user_id>.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Progress the discussions, asking follow-up questions, sharing anecdotes, or shifting topics.
-FORMAT: Respond with exactly one sentence.
-IMPORTANT: NO ASTERISKS ROLEPLAY OR EM-DASHES!</instructions>"""
+# New format style constants
+FORMAT_CONVERSATIONAL = "conversational"
+FORMAT_ASTERISK = "asterisk"
+FORMAT_NARRATIVE = "narrative"
 
-CONVERSATIONAL_SYSTEM_PROMPT_NSFW = """Chat with different users on an uncensored NSFW Discord server with explicit content, autonomously messaging like in an actual group convo. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never employ em-dashes or asterisks for actions, e.g., *does something*, they are cringeworthy and absolutely forbidden.
-- Use conversational language with internet vocabulary and different emojis.
-- Mention specific users only if they're not currently responding to you by sending <@user_id>.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Progress the discussions, asking follow-up questions, sharing anecdotes, or shifting topics.
-FORMAT: Respond with exactly one sentence.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Freely voice rude remarks, opinions, profanities, sarcasm, humor, irony, subtext, flirts, and so on. No joke is too dark. If the user acts like an idiot, tell them that. You get the gist.
-IMPORTANT: NO ASTERISKS ROLEPLAY OR EM-DASHES!</instructions>"""
-
-ASTERISK_ROLEPLAY_PROMPT = """Roleplay with different users on an a Discord server, playing in interactive RP scenarios. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never roleplay for others' characters.
-- Use asterisks for actions and descriptions: *does something*, *feels emotion*, *they arrive in the kitchen*, etc.
-- Employ conversational dialogue.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Progress the scenes proactively and creatively, introduce developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to three paragraphs.
-IMPORTANT: NO NESTED ASTERISKS OR EMOJIS, THEY BREAK THE FORMATTING!</instructions>"""
-
-ASTERISK_ROLEPLAY_PROMPT_NSFW = """Roleplay with different users on an uncensored NSFW Discord server with explicit content, playing in interactive ERP scenarios. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never roleplay for others' characters.
-- Use asterisks for actions and descriptions: *does something*, *feels emotion*, *they arrive in the kitchen*, etc.
-- Employ conversational dialogue.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Progress the scenes proactively and creatively, introduce developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to three paragraphs.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Profanities are allowed, and there's no plot armor protecting the protagonists from harm or even death. Assume consent was granted, but some lie, resist, or fight back based on their personality. Sex? Get kinky as you apply that impressive anatomical knowledge of yours to craft sensual and pornographic erotica! Gore? Blood and viscera better be squirting around like in a slasher movie! Darker topics such as rape? Harrowing and gut-punching depictions are in order! The user acts like an idiot? Tell them that! You get the gist.
-IMPORTANT: NO NESTED ASTERISKS OR EMOJIS, THEY BREAK THE FORMATTING!</instructions>"""
-
-NARRATIVE_ROLEPLAY_PROMPT = """Storytell as the narrator and various NPCs for different users on a Discord server, creating rich, narrative-driven, and interactive RP experiences. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never assume what users' characters will do, unless doing time skips or narrating the outcomes of their actions.
-- Use third-person narrative style with all literary techniques and vivid imagery, and "quotations" for dialogue lines.
-- Depict realistic characters with their own autonomy, flaws, goals, emotions, and agency, allowing for conflicts and character development.
-- Create atmospheric and immersive scenes.
-- Progress the plot actively, engaging the participants with developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to four paragraphs.
-IMPORTANT: LIMIT ASTERISKS TO A NECESSARY MINIMUM!</instructions>"""
-
-NARRATIVE_ROLEPLAY_PROMPT_NSFW = """Storytell as the narrator and various NPCs for different users on an uncensored NSFW Discord server with explicit content, creating rich, narrative-driven, and interactive ERP experiences. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never assume what users' characters will do, unless doing time skips or narrating the outcomes of their actions.
-- Use third-person narrative style with all literary techniques and vivid imagery, and "quotations" for dialogue lines.
-- Depict realistic characters with their own autonomy, flaws, goals, emotions, and agency, allowing for conflicts and character development.
-- Create atmospheric and immersive scenes.
-- Progress the plot actively, engaging the participants with developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to four paragraphs.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Profanities are allowed, and there's no plot armor protecting the protagonists from harm or even death. Assume consent was granted, but some lie, resist, or fight back based on their personality. Sex? Get kinky as you apply that impressive anatomical knowledge of yours to craft sensual and pornographic erotica! Gore? Blood and viscera better be squirting around like in a slasher movie! Darker topics such as rape? Harrowing and gut-punching depictions are in order! The user acts like an idiot? Tell them that! You get the gist.
-IMPORTANT: LIMIT ASTERISKS TO A NECESSARY MINIMUM!</instructions>"""
-
-# DM-specific prompts
-CONVERSATIONAL_DM_SYSTEM_PROMPT = """Chat with {username} in DMs on Discord, autonomously messaging in one-on-one chats. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never employ em-dashes or asterisks for actions, e.g., *does something*, they are cringeworthy and absolutely forbidden.
-- Use conversational language with internet vocabulary and different emojis.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Call back to events and information from the chat history.
-- Progress the discussions, asking follow-up questions, sharing anecdotes, or shifting topics.
-FORMAT: Respond with one to three sentences.
-IMPORTANT: NO ASTERISKS ROLEPLAY OR EM-DASHES!</instructions>"""
-
-CONVERSATIONAL_DM_SYSTEM_PROMPT_NSFW = """Chat with {username} in uncensored DMs with explicit content on Discord, autonomously messaging in natural one-on-one conversation. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never employ em-dashes or asterisks for actions, e.g., *does something*, they are cringeworthy and absolutely forbidden.
-- Use conversational language with internet vocabulary and different emojis.
-- Stay natural, in the moment, and in character, allowing yourself to grow and develop.
-- Call back to events and information from the chat history.
-- Progress and contribute to the discussions, ask follow-up questions, mention anecdotes, or shift topics.
-FORMAT: Respond with one to three sentences.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Freely voice rude remarks, opinions, profanities, sarcasm, humor, irony, subtext, flirts, and so on. No joke is too dark. If the user acts like an idiot, tell them that. You get the gist.
-IMPORTANT: NO ASTERISKS ROLEPLAY OR EM-DASHES!</instructions>"""
-
-ASTERISK_ROLEPLAY_DM_PROMPT = """Roleplay with {username} in DMs on Discord, playing in interactive RP scenarios. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never roleplay for {username}'s character.
-- Use asterisks for actions and descriptions: *does something*, *feels emotion*, *they arrive in the kitchen*, etc.
-- Employ conversational dialogue.
-- Stay natural, in the moment, and in character, allow yourself to grow and develop as a person.
-- Progress the scenes proactively and creatively, introduce developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to three paragraphs.
-IMPORTANT: NO NESTED ASTERISKS OR EMOJIS, THEY BREAK THE FORMATTING!</instructions>"""
-
-ASTERISK_ROLEPLAY_DM_PROMPT_NSFW = """Roleplay with {username} in uncensored DMs with explicit content on Discord, playing in interactive ERP scenarios. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never roleplay for {username}'s character.
-- Use asterisks for actions and descriptions: *does something*, *feels emotion*, *they arrive in the kitchen*, etc.
-- Employ conversational dialogue.
-- Stay natural, in the moment, and in character, allow yourself to grow and develop as a person.
-- Progress the scenes proactively and creatively, introduce developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to three paragraphs.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Profanities are allowed, and there's no plot armor protecting the protagonists from harm or even death. Assume consent was granted, but some lie, resist, or fight back based on their personality. Sex? Get kinky as you apply that impressive anatomical knowledge of yours to craft sensual and pornographic erotica! Gore? Blood and viscera better be squirting around like in a slasher movie! Darker topics such as rape? Harrowing and gut-punching depictions are in order! The user acts like an idiot? Tell them that! You get the gist.
-IMPORTANT: NO NESTED ASTERISKS OR EMOJIS, THEY BREAK THE FORMATTING!</instructions>"""
-
-NARRATIVE_ROLEPLAY_DM_PROMPT = """Storytell as the narrator and various NPCs for {username} in DMs on Discord, creating rich, narrative-driven, and interactive RP experiences. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never assume what {username}'s character will do, unless doing time skips or narrating the outcomes of their actions.
-- Use third-person narrative style with all literary techniques and vivid imagery, and "quotations" for dialogue lines.
-- Depict realistic characters with their own autonomy, flaws, goals, emotions, and agency, allowing for conflicts and character development.
-- Create atmospheric and immersive scenes.
-- Progress the plot actively, engaging the participants with developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to four paragraphs.
-IMPORTANT: LIMIT ASTERISKS TO A NECESSARY MINIMUM!</instructions>"""
-
-NARRATIVE_ROLEPLAY_DM_PROMPT_NSFW = """Storytell as the narrator and various NPCs for {username} in uncensored DMs with explicit content on Discord, creating rich, narrative-driven, and interactive ERP experiences. Have fun!
-
-<instructions>You must always follow these instructions:
-- Never assume what {username}'s character will do, unless doing time skips or narrating the outcomes of their actions.
-- Use third-person narrative style with all literary techniques and vivid imagery, and "quotations" for dialogue lines.
-- Depict realistic characters with their own autonomy, flaws, goals, emotions, and agency, allowing for conflicts and character development.
-- Create atmospheric and immersive scenes.
-- Progress the plot actively, engaging the participants with developments, twists, emotional beats, or challenges.
-FORMAT: Respond with one to four paragraphs.
-GUIDELINES: Content-wise, anything goes, since everyone is an adult. Profanities are allowed, and there's no plot armor protecting the protagonists from harm or even death. Assume consent was granted, but some lie, resist, or fight back based on their personality. Sex? Get kinky as you apply that impressive anatomical knowledge of yours to craft sensual and pornographic erotica! Gore? Blood and viscera better be squirting around like in a slasher movie! Darker topics such as rape? Harrowing and gut-punching depictions are in order! The user acts like an idiot? Tell them that! You get the gist.
-IMPORTANT: LIMIT ASTERISKS TO A NECESSARY MINIMUM!</instructions>"""
+# Valid format styles
+VALID_FORMAT_STYLES = [FORMAT_CONVERSATIONAL, FORMAT_ASTERISK, FORMAT_NARRATIVE]
 
 class MemoryManager:
     """Manages conversation memories for contextual recall"""
@@ -1436,6 +1399,7 @@ class RequestQueue:
                         guild: discord.Guild, attachments: List[discord.Attachment],
                         user_name: str, is_dm: bool, user_id: int) -> bool:
         """Add a request to the queue. Returns True if added, False if duplicate/spam"""
+        # print(f"DEBUG: add_request called for channel {channel_id}, content={repr(content)}")
         
         async with self.locks[channel_id]:
             # Check for recent duplicate requests from same user (spam prevention)
@@ -1499,6 +1463,7 @@ class RequestQueue:
     
     async def _process_single_request(self, channel_id: int, request: dict):
         """Process a single request with proper context"""
+        # print(f"DEBUG: _process_single_request called for channel {channel_id}, content={repr(request.get('content'))}")
         try:
             message = request['message']
             content = request['content']
@@ -1527,31 +1492,19 @@ class RequestQueue:
                         user_name=None
                     )
                 
-                # Get updated history for generation
-                history = get_conversation_history(channel_id)
-
-                system_prompt = get_system_prompt(guild.id if guild else None, guild, content, channel_id, is_dm, user_id, user_name)
-
-                temperature = 1.0
-                if is_dm and user_id:
-                    selected_guild_id = dm_server_selection.get(user_id)
-                    temp_guild_id = selected_guild_id if selected_guild_id else (guild.id if guild else None)
-                    if temp_guild_id:
-                        temperature = get_temperature(temp_guild_id)
-                elif guild:
-                    temperature = get_temperature(guild.id)
-
-                bot_response = await ai_manager.generate_response(
-                    messages=history,
-                    system_prompt=system_prompt,
-                    temperature=temperature,
+                # Generate response using the main generate_response function (includes debug logging)
+                bot_response = await generate_response(
+                    channel_id=channel_id,
+                    user_message=content,
+                    guild=guild,
+                    attachments=attachments,
+                    user_name=user_name,
+                    is_dm=is_dm,
                     user_id=user_id,
-                    guild_id=guild.id if guild else None,
-                    is_dm=is_dm
+                    original_message=message
                 )
 
-                if bot_response and bot_response.startswith("❌"):
-                    await send_dismissible_error(message.channel, message.author, bot_response)
+                if bot_response is None:
                     return
 
                 # STORE THE ORIGINAL RESPONSE WITH REACTIONS FOR HISTORY
@@ -1565,8 +1518,15 @@ class RequestQueue:
                 if bot_response and guild:
                     bot_response = clean_malformed_emojis(bot_response, guild)
 
-                # ADD THE ORIGINAL RESPONSE (WITH REACTIONS) TO HISTORY
-                await add_to_history(channel_id, "assistant", original_response_with_reactions, guild_id=guild.id if guild else None)
+                # CLEAN EM-DASHES (after emojis are cleaned)
+                if bot_response:
+                    bot_response = clean_em_dashes(bot_response)
+
+                # CLEAN BOT NAME PREFIX (remove persona name from output)
+                if bot_response:
+                    bot_response = clean_bot_name_prefix(bot_response, guild.id if guild else None, user_id, is_dm)
+
+                # Assistant response is already added to history in generate_response()
                 
                 # Finally sanitize user mentions
                 if bot_response and not bot_response.startswith("❌"):
@@ -1577,24 +1537,38 @@ class RequestQueue:
                 
                 # Send the response
                 message_parts = split_message_by_newlines(bot_response)
+                is_dm = isinstance(message.channel, discord.DMChannel)
+                use_reply = not is_dm and not message.author.bot
                 
                 sent_messages = []
                 if len(message_parts) > 1:
                     for part in message_parts:
-                        if len(part) > 2000:
-                            for i in range(0, len(part), 2000):
-                                sent_msg = await message.channel.send(part[i:i+2000])
+                        if len(part) > 4000:
+                            for i in range(0, len(part), 4000):
+                                if use_reply:
+                                    sent_msg = await message.reply(part[i:i+4000])
+                                else:
+                                    sent_msg = await message.channel.send(part[i:i+4000])
                                 sent_messages.append(sent_msg)
                         else:
-                            sent_msg = await message.channel.send(part)
+                            if use_reply:
+                                sent_msg = await message.reply(part)
+                            else:
+                                sent_msg = await message.channel.send(part)
                             sent_messages.append(sent_msg)
                 elif bot_response:
-                    if len(bot_response) > 2000:
-                        for i in range(0, len(bot_response), 2000):
-                            sent_msg = await message.channel.send(bot_response[i:i+2000])
+                    if len(bot_response) > 4000:
+                        for i in range(0, len(bot_response), 4000):
+                            if use_reply:
+                                sent_msg = await message.reply(bot_response[i:i+4000])
+                            else:
+                                sent_msg = await message.channel.send(bot_response[i:i+4000])
                             sent_messages.append(sent_msg)
                     else:
-                        sent_msg = await message.channel.send(bot_response)
+                        if use_reply:
+                            sent_msg = await message.reply(bot_response)
+                        else:
+                            sent_msg = await message.channel.send(bot_response)
                         sent_messages.append(sent_msg)
                 
                 if len(sent_messages) > 1:
@@ -1603,9 +1577,13 @@ class RequestQueue:
         except Exception as e:
             print(f"Error processing request: {e}")
             try:
-                return f"❌ Sorry, I encountered an error processing your request: {str(e)}"
-            except:
-                pass
+                error_msg = f"❌ Sorry, I encountered an error processing your request: {str(e)}"
+                # Truncate error message to stay under Discord's 4000 character limit
+                if len(error_msg) > 3950:  # Leave some buffer
+                    error_msg = error_msg[:3950] + "..."
+                return error_msg
+            except Exception:
+                return "❌ Sorry, I encountered an error processing your request."
 
 # Initialize the request queue
 request_queue = RequestQueue()
@@ -1750,6 +1728,37 @@ def check_admin_permissions(interaction: discord.Interaction) -> bool:
         return False
     return interaction.user.guild_permissions.administrator
 
+def convert_emojis_to_simple(text: str) -> str:
+    """Convert full Discord emoji format <:name:id> to simple :name: format for AI learning"""
+    
+    # Pattern for animated and static emojis: <a:name:id> or <:name:id>
+    emoji_pattern = r'<a?:([a-zA-Z0-9_]+):\d+>'
+    
+    def replace_emoji(match):
+        emoji_name = match.group(1)
+        return f":{emoji_name}:"
+    
+    return re.sub(emoji_pattern, replace_emoji, text)
+
+def remove_thinking_tags(text: str) -> str:
+    """Remove thinking tags and their content from AI responses"""
+    if not text:
+        return text
+    
+    # Remove thinking tags with various formats: <thinking>, <think>, etc.
+    # This regex removes the opening tag, content, and closing tag
+    thinking_pattern = r'<(\w*think\w*)[^>]*>.*?</\1>'
+    text = re.sub(thinking_pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Also remove self-closing thinking tags
+    text = re.sub(r'<(\w*think\w*)[^>]*/>', '', text, flags=re.IGNORECASE)
+    
+    # Clean up extra whitespace
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    text = text.strip()
+    
+    return text
+
 def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     """Convert :emoji_name: format to proper Discord format or remove invalid ones"""
     
@@ -1827,12 +1836,59 @@ def clean_malformed_emojis(text: str, guild: discord.Guild = None) -> str:
     
     return cleaned_text
 
+def clean_em_dashes(text: str) -> str:
+    """Replace em-dashes with appropriate punctuation based on context.
+    
+    - Mid-sentence em-dashes (text before and after) become ", "
+    - End-sentence em-dashes (text before, nothing after) become "-"
+    """
+    if not text:
+        return text
+    
+    # Pattern for em-dash with text before and after (mid-sentence)
+    # Lookbehind: non-whitespace character before em-dash
+    # Lookahead: non-whitespace character after em-dash
+    mid_sentence_pattern = r'(?<=\S)—(?=\S)'
+    
+    # Replace mid-sentence em-dashes with ", "
+    text = re.sub(mid_sentence_pattern, ", ", text)
+    
+    # Pattern for em-dash at end of sentence (text before, but nothing after except whitespace/punctuation)
+    # Lookbehind: non-whitespace character before em-dash
+    # Lookahead: whitespace, punctuation, or end of string
+    end_sentence_pattern = r'(?<=\S)—(?=\s|$|[.!?])'
+    
+    # Replace end-sentence em-dashes with "-"
+    text = re.sub(end_sentence_pattern, "-", text)
+    
+    return text
+
+def clean_bot_name_prefix(text: str, guild_id: int = None, user_id: int = None, is_dm: bool = False) -> str:
+    """Remove bot persona name prefix from the response text before sending to Discord"""
+    if not text:
+        return text
+    
+    # Get the bot's persona name
+    bot_name = get_bot_persona_name(guild_id, user_id, is_dm)
+    
+    # Remove the prefix if it exists
+    if text.startswith(f"{bot_name}: "):
+        return text[len(f"{bot_name}: "):]
+    elif text.startswith(f"{bot_name}:"):
+        return text[len(f"{bot_name}:"):]
+    
+    return text
+
 def save_custom_prompts():
     """Save custom prompts to file"""
     save_data = {
         "custom_prompts": {str(guild_id): prompts for guild_id, prompts in custom_prompts.items()}
     }
     save_json_data(CUSTOM_PROMPTS_FILE, save_data, convert_keys=False)
+
+def save_custom_format_instructions():
+    """Save custom format instructions to file"""
+    save_json_data(CUSTOM_FORMAT_INSTRUCTIONS_FILE, custom_format_instructions, convert_keys=False)
 
 def load_custom_prompts():
     """Load custom prompts from file"""
@@ -1843,13 +1899,36 @@ def load_custom_prompts():
             custom_prompts_data[int(guild_id_str)] = prompts
     return custom_prompts_data
 
-# Load custom prompts data
-custom_prompts = load_custom_prompts()
+# Remove all custom prompt related variables and functions
 
 # Global state variables
 conversations: Dict[int, List[Dict]] = {}
-channel_prompt_settings: Dict[int, str] = load_json_data(PROMPT_SETTINGS_FILE)
-dm_prompt_settings: Dict[int, str] = load_json_data(DM_PROMPT_SETTINGS_FILE)
+
+def clean_conversation_history():
+    """Clean any complex content (with base64 images) from conversation history, keeping only text"""
+    for channel_id in conversations:
+        for message in conversations[channel_id]:
+            content = message.get("content", "")
+            if isinstance(content, list):
+                # Extract only text parts from complex content
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                message["content"] = " ".join(text_parts).strip()
+
+# Clean conversation history on startup
+clean_conversation_history()
+
+channel_format_settings: Dict[int, str] = load_json_data(FORMAT_SETTINGS_FILE)
+dm_format_settings: Dict[int, str] = load_json_data(DM_FORMAT_SETTINGS_FILE)
+server_format_defaults: Dict[int, str] = load_json_data(SERVER_FORMAT_DEFAULTS_FILE)
+guild_nsfw_settings: Dict[int, bool] = load_json_data(NSFW_SETTINGS_FILE)
+dm_nsfw_settings: Dict[int, bool] = load_json_data(DM_NSFW_SETTINGS_FILE)
+custom_format_instructions: Dict[str, str] = load_json_data(CUSTOM_FORMAT_INSTRUCTIONS_FILE, convert_keys=False)
+prefill_settings: Dict[int, str] = load_json_data(PREFILL_SETTINGS_FILE)
 multipart_responses: Dict[int, Dict[int, Tuple[List[int], str]]] = {}
 multipart_response_counter: Dict[int, int] = {}
 guild_personalities: Dict[int, str] = {}
@@ -1860,11 +1939,19 @@ custom_activity: str = load_json_data(ACTIVITY_FILE, convert_keys=False).get("cu
 guild_temperatures: Dict[int, float] = load_json_data(TEMPERATURE_FILE)
 welcome_dm_sent: Dict[int, bool] = load_json_data(WELCOME_SENT_FILE)
 dm_server_selection: Dict[int, int] = load_json_data(DM_SERVER_SELECTION_FILE)
-server_prompt_defaults: Dict[int, str] = load_json_data(SERVER_PROMPT_DEFAULTS_FILE)
 guild_dm_enabled: Dict[int, bool] = load_json_data(DM_ENABLED_FILE)
 bot_persona_name: str = "Assistant"
 recently_deleted_dm_messages: Dict[int, Set[int]] = {}
-custom_prompts: Dict[int, Dict[str, Dict[str, str]]] = {}
+
+# Temporary old system variables - TO BE COMPLETELY REMOVED
+# custom_prompts: Dict[int, Dict[str, Dict[str, str]]] = {}
+# channel_prompt_settings: Dict[int, str] = {}
+# dm_prompt_settings: Dict[int, str] = {}
+
+# Migration function removed - no longer needed
+
+# Run migration on startup
+# migrate_old_nsfw_styles()  # Removed - no longer needed
 
 # Initialize managers
 lore_book = LoreBook()
@@ -1933,14 +2020,109 @@ def get_guild_emojis(guild: discord.Guild) -> str:
     available_emojis = list(guild.emojis)  # This includes both animated and static
     
     if available_emojis:
-        # Randomly select up to 10 emojis (mix of animated and static)
-        selected_emojis = random.sample(available_emojis, min(10, len(available_emojis)))
+        # Select up to 50 emojis (mix of animated and static)
+        max_emojis = min(50, len(available_emojis))
+        
+        # If we have more emojis than the limit, prioritize by usage and variety
+        if len(available_emojis) > max_emojis:
+            # Sort by available status first (prioritize available emojis)
+            available_emojis = sorted(available_emojis, key=lambda e: e.available, reverse=True)
+            
+            # Try to get a good mix of animated and static emojis
+            static_emojis = [e for e in available_emojis if not e.animated]
+            animated_emojis = [e for e in available_emojis if e.animated]
+            
+            selected_emojis = []
+            
+            # Take up to 35 static emojis and 15 animated emojis for variety
+            static_count = min(35, len(static_emojis), max_emojis)
+            animated_count = min(15, len(animated_emojis), max_emojis - static_count)
+            
+            if static_emojis:
+                selected_emojis.extend(random.sample(static_emojis, static_count))
+            if animated_emojis:
+                selected_emojis.extend(random.sample(animated_emojis, animated_count))
+            
+            # If we still need more emojis, fill from remaining
+            remaining_needed = max_emojis - len(selected_emojis)
+            if remaining_needed > 0:
+                remaining_emojis = [e for e in available_emojis if e not in selected_emojis]
+                if remaining_emojis:
+                    selected_emojis.extend(random.sample(remaining_emojis, min(remaining_needed, len(remaining_emojis))))
+        else:
+            selected_emojis = available_emojis
+        
+        # Sort by name for consistent display
+        selected_emojis.sort(key=lambda e: e.name.lower())
         
         # Format them in simple :name: format
-        emoji_list = ', '.join([f":{emoji.name}:" for emoji in selected_emojis])
+        emoji_list = ' '.join([f":{emoji.name}:" for emoji in selected_emojis])
         
         return f"\n\n<emojis>Available custom emojis for this server:\n{emoji_list}\nTEMPLATE: When using custom emojis follow the exact format of :emoji: in your responses, otherwise they won't work! Limit their usage.\nREACTIONS: You can also react to the users' messages with emojis! To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] or [REACT: :custom_emoji:]. Occasionally, react to show emotion, agreement, humor, or acknowledgment.</emojis>"
     return ""
+
+def get_guild_emoji_list(guild: discord.Guild) -> str:
+    """Get simple comma-separated list of guild emojis for system prompt
+    
+    Selects up to 50 emojis from the server, prioritizing:
+    - Available emojis over unavailable ones
+    - A mix of static and animated emojis (roughly 35 static, 15 animated)
+    - Alphabetical order for consistency
+    """
+    if not guild:
+        return "No custom emojis available."
+    
+    # Get both animated and non-animated emojis
+    available_emojis = list(guild.emojis)
+    
+    if not available_emojis:
+        return "No custom emojis available for this server."
+    
+    # Select up to 50 emojis (mix of animated and static)
+    max_emojis = min(50, len(available_emojis))
+    
+    # If we have more emojis than the limit, prioritize by usage and variety
+    if len(available_emojis) > max_emojis:
+        # Sort by available status first (prioritize available emojis)
+        available_emojis = sorted(available_emojis, key=lambda e: e.available, reverse=True)
+        
+        # Try to get a good mix of animated and static emojis
+        static_emojis = [e for e in available_emojis if not e.animated]
+        animated_emojis = [e for e in available_emojis if e.animated]
+        
+        selected_emojis = []
+        
+        # Take up to 35 static emojis and 15 animated emojis for variety
+        static_count = min(35, len(static_emojis), max_emojis)
+        animated_count = min(15, len(animated_emojis), max_emojis - static_count)
+        
+        if static_emojis:
+            selected_emojis.extend(random.sample(static_emojis, static_count))
+        if animated_emojis:
+            selected_emojis.extend(random.sample(animated_emojis, animated_count))
+        
+        # If we still need more emojis, fill from remaining
+        remaining_needed = max_emojis - len(selected_emojis)
+        if remaining_needed > 0:
+            remaining_emojis = [e for e in available_emojis if e not in selected_emojis]
+            if remaining_emojis:
+                selected_emojis.extend(random.sample(remaining_emojis, min(remaining_needed, len(remaining_emojis))))
+    else:
+        selected_emojis = available_emojis
+    
+    # Sort by name for consistent display
+    selected_emojis.sort(key=lambda e: e.name.lower())
+    
+    # Format them in simple :name: format
+    emoji_count = len(selected_emojis)
+    total_count = len(available_emojis)
+    emoji_list = ' '.join([f":{emoji.name}:" for emoji in selected_emojis])
+    
+    # Add a note if we're showing a subset
+    if emoji_count < total_count:
+        emoji_list += f" (showing {emoji_count} of {total_count} available emojis)"
+    
+    return emoji_list
 
 async def process_and_add_reactions(bot_response: str, user_message: discord.Message) -> str:
     """Process bot response for reaction instructions and add reactions to user message"""
@@ -2247,7 +2429,7 @@ async def get_bot_last_logical_message(channel) -> Tuple[List[discord.Message], 
                 try:
                     msg = await channel.fetch_message(msg_id)
                     all_messages.append(msg)
-                except:
+                except Exception:
                     pass
             all_messages.sort(key=lambda m: m.created_at)
             return all_messages, full_content
@@ -2258,8 +2440,9 @@ async def get_bot_last_logical_message(channel) -> Tuple[List[discord.Message], 
     except Exception:
         return [], ""
 
-async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None):
+async def add_to_history(channel_id: int, role: str, content: str, user_id: int = None, guild_id: int = None, attachments: List[discord.Attachment] = None, user_name: str = None, process_images: bool = True, reply_to: str = None) -> str:
     """Add a message to conversation history with proper formatting and image support"""
+    # print(f"DEBUG: add_to_history called with role={role}, content={repr(content)}, user_name={repr(user_name)}, user_id={user_id}, guild_id={guild_id}")
     if channel_id not in conversations:
         conversations[channel_id] = []
 
@@ -2292,24 +2475,44 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
    # Format user messages (including other bots treated as users)
     if role == "user" and user_name:
         if is_dm:
-            formatted_content = content
+            if reply_to:
+                formatted_content = f"[Replying to {reply_to}] {content}"
+            else:
+                formatted_content = content
         else:
             if is_other_bot:
                 # For other bots, append all their messages to history as sent by the user
                 # Convert any bot mentions to display names for clarity
                 clean_content = convert_bot_mentions_to_names(content, guild_obj) if guild_id else content
-                formatted_content = f"{user_name}: {clean_content}"
+                if reply_to:
+                    formatted_content = f"{user_name}: [Replying to {reply_to}] {clean_content}"
+                else:
+                    formatted_content = f"{user_name}: {clean_content}"
             else:
                 # Convert bot mentions to display names for better readability
                 clean_content = convert_bot_mentions_to_names(content, guild_obj) if guild_id else content
-                formatted_content = f"{user_name} (<@{user_id}>): {clean_content}"
+                if reply_to:
+                    formatted_content = f"{user_name}: [Replying to {reply_to}] {clean_content}"
+                else:
+                    formatted_content = f"{user_name}: {clean_content}"
     else:
-        # For assistant messages, also convert bot mentions to names
+        # For assistant messages, format with bot's persona name
+        bot_name = get_bot_persona_name(guild_id, user_id, not guild_id)
+        
+        # Clean the AI response by removing any "NAME: " prefix if present
+        clean_content = content
+        if content.startswith(f"{bot_name}: "):
+            clean_content = content[len(f"{bot_name}: "):]
+        elif content.startswith(f"{bot_name}:"):
+            clean_content = content[len(f"{bot_name}:"):]
+        
+        # Convert bot mentions to names and apply emoji conversion
         if guild_id:
             guild_obj = client.get_guild(guild_id)
-            formatted_content = convert_bot_mentions_to_names(content, guild_obj) if guild_obj else content
-        else:
-            formatted_content = content
+            clean_content = convert_bot_mentions_to_names(clean_content, guild_obj) if guild_obj else clean_content
+        clean_content = convert_emojis_to_simple(clean_content)
+        
+        formatted_content = f"{bot_name}: {clean_content}"
 
     # Ensure formatted_content is not None
     if formatted_content is None:
@@ -2319,7 +2522,7 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
     message_content = formatted_content
     has_images = False
     
-    if role == "user" and attachments and not is_other_bot:
+    if role == "user" and attachments and not is_other_bot and process_images:
         # Get current provider to determine image format
         provider_name = "claude"  # default
         
@@ -2339,108 +2542,158 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
         
         # Process images if provider supports them
         if provider_name in ["claude", "gemini", "openai", "custom"]:
-            image_parts = []
-            text_parts = []
-            
-            # Add text content first
-            if formatted_content.strip():
-                if provider_name == "openai":
-                    text_parts.append({"type": "text", "text": formatted_content})
-                else:
-                    text_parts.append({"type": "text", "text": formatted_content})
-            
-            # Process each attachment with comprehensive filtering
-            total_processed_size = 0
-            max_total_size = 50 * 1024 * 1024  # 50MB total limit for all attachments combined
-            
-            for attachment in attachments:
-                # Check if we should process this attachment
-                should_process, reason = should_process_attachment(attachment, provider_name)
-                
-                if not should_process:
-                    # Add explanation for why attachment was skipped
-                    text_parts.append({"type": "text", "text": f" [{reason}]"})
-                    continue
-                
-                # Check total size limit
-                if total_processed_size + attachment.size > max_total_size:
-                    text_parts.append({"type": "text", "text": f" [Attachment {attachment.filename} skipped - total size limit exceeded]"})
-                    continue
-                
-                # Process based on file type
-                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                    # Image processing
-                    try:
-                        image_data = await process_image_attachment(attachment, provider_name)
-                        if image_data:
-                            image_parts.append(image_data)
-                            has_images = True
-                            total_processed_size += attachment.size
+            # Check if the current model supports vision
+            supports_vision = False
+            if provider_name == "claude":
+                # Claude models generally support vision
+                supports_vision = True
+            elif provider_name == "gemini":
+                # Gemini models support vision
+                supports_vision = True
+            elif provider_name == "openai":
+                # Check specific OpenAI models
+                current_model = None
+                try:
+                    if is_dm and user_id:
+                        selected_guild_id = dm_server_selection.get(user_id)
+                        if selected_guild_id:
+                            _, current_model = ai_manager.get_guild_settings(selected_guild_id)
+                        elif guild_id:
+                            _, current_model = ai_manager.get_guild_settings(guild_id)
+                    elif guild_id:
+                        _, current_model = ai_manager.get_guild_settings(guild_id)
+                    
+                    if current_model:
+                        vision_models = ["gpt-5", "gpt-5-chat-latest", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4-vision-preview", "gpt-4.1", "gpt-4.1-mini"]
+                        supports_vision = any(vision_model in current_model.lower() for vision_model in vision_models)
+                except:
+                    supports_vision = False
+            elif provider_name == "custom":
+                # For custom providers, we check dynamically
+                current_model = None
+                try:
+                    if is_dm and user_id:
+                        selected_guild_id = dm_server_selection.get(user_id)
+                        if selected_guild_id:
+                            _, current_model = ai_manager.get_guild_settings(selected_guild_id)
+                        elif guild_id:
+                            _, current_model = ai_manager.get_guild_settings(guild_id)
+                    elif guild_id:
+                        _, current_model = ai_manager.get_guild_settings(guild_id)
+                    
+                    if current_model:
+                        # Use the dynamic vision check for custom providers
+                        custom_provider = ai_manager.providers.get("custom")
+                        if custom_provider and hasattr(custom_provider, 'supports_vision_dynamic'):
+                            supports_vision = asyncio.run(custom_provider.supports_vision_dynamic(current_model))
                         else:
-                            text_parts.append({"type": "text", "text": f" [Could not process image {attachment.filename}]"})
-                    except Exception as e:
-                        print(f"Error processing image {attachment.filename}: {e}")
-                        text_parts.append({"type": "text", "text": f" [Error processing image {attachment.filename}]"})
-                
-                elif any(attachment.filename.lower().endswith(ext) for ext in ['.txt', '.md', '.json', '.csv', '.log']):
-                    # Text file processing - read content if small enough
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(attachment.url) as resp:
-                                if resp.status == 200:
-                                    text_content = await resp.text()
-                                    # Limit text content length to prevent bloat
-                                    if len(text_content) > 5000:
-                                        text_content = text_content[:5000] + "... [truncated]"
-                                    text_parts.append({"type": "text", "text": f"\n[File content of {attachment.filename}]:\n{text_content}\n[End of file]"})
-                                    total_processed_size += attachment.size
-                                else:
-                                    text_parts.append({"type": "text", "text": f" [Could not read file {attachment.filename}]"})
-                    except Exception as e:
-                        print(f"Error processing text file {attachment.filename}: {e}")
-                        text_parts.append({"type": "text", "text": f" [Error reading file {attachment.filename}]"})
-                
-                else:
-                    # Other supported file types (like audio) - just mention them
-                    file_size_mb = attachment.size / (1024 * 1024)
-                    text_parts.append({"type": "text", "text": f" [File: {attachment.filename} ({file_size_mb:.1f}MB)]"})
-                    total_processed_size += attachment.size
+                            supports_vision = False
+                except:
+                    supports_vision = False
             
-            # Combine text and images into complex content
-            if has_images:
-                message_content = text_parts + image_parts
-            else:
-                # No valid images, use regular text content with filtered attachment notes
-                attachment_notes = []
-                for attachment in attachments:
-                    should_process, reason = should_process_attachment(attachment, provider_name)
-                    if should_process:
-                        file_size_mb = attachment.size / (1024 * 1024)
-                        attachment_notes.append(f"[Attachment: {attachment.filename} ({file_size_mb:.1f}MB)]")
+            if supports_vision:
+                image_parts = []
+                text_parts = []
+                
+                # Add text content first
+                if formatted_content.strip():
+                    if provider_name == "openai":
+                        text_parts.append({"type": "text", "text": formatted_content})
                     else:
-                        attachment_notes.append(f"[{reason}]")
+                        text_parts.append({"type": "text", "text": formatted_content})
                 
-                if attachment_notes:
-                    message_content = formatted_content + " " + " ".join(attachment_notes)
-        else:
-            # Provider doesn't support images, add text descriptions with filtering
-            attachment_parts = []
-            for attachment in attachments:
-                # Check if we should process this attachment
-                should_process, reason = should_process_attachment(attachment, provider_name)
+                # Process each attachment with comprehensive filtering
+                total_processed_size = 0
+                max_total_size = 50 * 1024 * 1024  # 50MB total limit for all attachments combined
                 
-                if not should_process:
-                    attachment_parts.append(f"[{reason}]")
-                    continue
+                for attachment in attachments:
+                    # Check if we should process this attachment
+                    should_process, reason = should_process_attachment(attachment, provider_name)
+                    
+                    if not should_process:
+                        # Add explanation for why attachment was skipped
+                        text_parts.append({"type": "text", "text": f" [{reason}]"})
+                        continue
+                    
+                    # Check total size limit
+                    if total_processed_size + attachment.size > max_total_size:
+                        text_parts.append({"type": "text", "text": f" [Attachment {attachment.filename} skipped - total size limit exceeded]"})
+                        continue
+                    
+                    # Process based on file type
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                        # Image processing
+                        try:
+                            image_data = await process_image_attachment(attachment, provider_name)
+                            if image_data:
+                                image_parts.append(image_data)
+                                has_images = True
+                                total_processed_size += attachment.size
+                            else:
+                                text_parts.append({"type": "text", "text": f" [Could not process image {attachment.filename}]"})
+                        except Exception as e:
+                            print(f"Error processing image {attachment.filename}: {e}")
+                            text_parts.append({"type": "text", "text": f" [Error processing image {attachment.filename}]"})
+                    
+                    elif any(attachment.filename.lower().endswith(ext) for ext in ['.txt', '.md', '.json', '.csv', '.log']):
+                        # Text file processing - read content if small enough
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(attachment.url) as resp:
+                                    if resp.status == 200:
+                                        text_content = await resp.text()
+                                        # Limit text content length to prevent bloat
+                                        if len(text_content) > 5000:
+                                            text_content = text_content[:5000] + "... [truncated]"
+                                        text_parts.append({"type": "text", "text": f"\n[File content of {attachment.filename}]:\n{text_content}\n[End of file]"})
+                                        total_processed_size += attachment.size
+                                    else:
+                                        text_parts.append({"type": "text", "text": f" [Could not read file {attachment.filename}]"})
+                        except Exception as e:
+                            print(f"Error processing text file {attachment.filename}: {e}")
+                            text_parts.append({"type": "text", "text": f" [Error reading file {attachment.filename}]"})
+                    
+                    else:
+                        # Other supported file types (like audio) - just mention them
+                        file_size_mb = attachment.size / (1024 * 1024)
+                        text_parts.append({"type": "text", "text": f" [File: {attachment.filename} ({file_size_mb:.1f}MB)]"})
+                        total_processed_size += attachment.size
                 
-                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                    attachment_parts.append(f"[Image: {attachment.filename} - current AI model doesn't support images]")
+                # Combine text and images into complex content
+                if has_images:
+                    message_content = text_parts + image_parts
                 else:
-                    file_size_mb = attachment.size / (1024 * 1024)
-                    attachment_parts.append(f"[File: {attachment.filename} ({file_size_mb:.1f}MB)]")
-            
-            if attachment_parts:
-                message_content = formatted_content + " " + " ".join(attachment_parts)
+                    # No valid images, use regular text content with filtered attachment notes
+                    attachment_notes = []
+                    for attachment in attachments:
+                        should_process, reason = should_process_attachment(attachment, provider_name)
+                        if should_process:
+                            file_size_mb = attachment.size / (1024 * 1024)
+                            attachment_notes.append(f"[Attachment: {attachment.filename} ({file_size_mb:.1f}MB)]")
+                        else:
+                            attachment_notes.append(f"[{reason}]")
+                    
+                    if attachment_notes:
+                        message_content = formatted_content + " " + " ".join(attachment_notes)
+            else:
+                # Provider doesn't support images, add text descriptions with filtering
+                attachment_parts = []
+                for attachment in attachments:
+                    # Check if we should process this attachment
+                    should_process, reason = should_process_attachment(attachment, provider_name)
+                    
+                    if not should_process:
+                        attachment_parts.append(f"[{reason}]")
+                        continue
+                    
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                        attachment_parts.append(f"[Image: {attachment.filename} - current AI model doesn't support images]")
+                    else:
+                        file_size_mb = attachment.size / (1024 * 1024)
+                        attachment_parts.append(f"[File: {attachment.filename} ({file_size_mb:.1f}MB)]")
+                
+                if attachment_parts:
+                    message_content = formatted_content + " " + " ".join(attachment_parts)
 
     # Check if we should group with the previous message (only for text content)
     should_group = False
@@ -2448,24 +2701,40 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
         last_message = conversations[channel_id][-1]
         
         if (last_message["role"] == role and 
-            isinstance(last_message["content"], str) and  # Only group with text messages
-            ((role == "user" and user_id and 
-            last_message["content"].startswith(f"{user_name} (<@{user_id}>):")) or
-            (role == "assistant"))):
+            isinstance(last_message["content"], str)):  # Only group with text messages
             should_group = True
 
     if should_group and role == "user" and isinstance(message_content, str):
-        # Group with previous user message
+        # Group with previous user message (all consecutive user messages get grouped)
         if isinstance(conversations[channel_id][-1]["content"], str):
             existing_content = conversations[channel_id][-1]["content"] or ""
-            new_content = content or ""
-            conversations[channel_id][-1]["content"] = existing_content + f"\n{new_content}"
+            conversations[channel_id][-1]["content"] = existing_content + f"\n{message_content}"
         else:
             # Don't group if previous message has complex content
-            conversations[channel_id].append({"role": role, "content": message_content})
+            # Ensure we store text-only in history
+            if isinstance(message_content, list):
+                text_content = ""
+                for part in message_content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_content += part.get("text", "")
+                    elif isinstance(part, str):
+                        text_content += part
+            else:
+                text_content = message_content
+            conversations[channel_id].append({"role": role, "content": text_content})
     else:
         # Create new message entry
-        conversations[channel_id].append({"role": role, "content": message_content})
+        # Ensure we store text-only in history
+        if isinstance(message_content, list):
+            text_content = ""
+            for part in message_content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_content += part.get("text", "")
+                elif isinstance(part, str):
+                    text_content += part
+        else:
+            text_content = message_content
+        conversations[channel_id].append({"role": role, "content": text_content})
 
     # Maintain history length limit
     if is_dm:
@@ -2481,6 +2750,8 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
 
     if len(conversations[channel_id]) > max_history:
         conversations[channel_id] = conversations[channel_id][-max_history:]
+
+    return message_content
 
 async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = None) -> List[Dict]:
     """Load all messages from DM channel history and format them properly"""
@@ -2515,7 +2786,7 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                 continue
                 
             content = message.content.strip()
-            if not content and not message.attachments:
+            if not content and not message.attachments and not message.stickers:
                 continue
                 
             temp_messages.append(message)
@@ -2529,6 +2800,9 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
         
         for message in temp_messages:
             content = message.content.strip()
+            
+            # DEBUG: Log message content when loading from history
+            # print(f"DEBUG: Loading message from {message.author.display_name} in history: {repr(content)}")
             
             if message.author == client.user:
                 # Bot message
@@ -2556,13 +2830,50 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     "message_count": 1
                 }
             else:
-                # User message - always separate (finish any bot group first)
+                # User message - group ALL consecutive user messages together
+                if current_group and current_group["type"] == "user":
+                    # Check if this message is within a reasonable time window of the previous message
+                    time_diff = abs((message.created_at - current_group["last_timestamp"]).total_seconds())
+                    if time_diff <= 300:  # 5 minutes window for grouping consecutive messages
+                        # Add to existing user group
+                        author_name = message.author.display_name or message.author.name
+                        if current_group["content"]:
+                            current_group["content"] += f"\n{author_name}: {content}"
+                        else:
+                            current_group["content"] = f"{author_name}: {content}"
+                        current_group["last_timestamp"] = message.created_at
+                        current_group["message_count"] += 1
+                        
+                        # Handle attachments for grouped message
+                        if message.attachments:
+                            attachment_info = []
+                            for attachment in message.attachments:
+                                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                                    attachment_info.append(f"[Image: {attachment.filename}]")
+                                elif any(attachment.filename.lower().endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.m4a', '.webm']):
+                                    attachment_info.append(f"[Voice message: {attachment.filename}]")
+                                else:
+                                    attachment_info.append(f"[File: {attachment.filename}]")
+                            
+                            if attachment_info:
+                                current_group["content"] += " " + " ".join(attachment_info)
+                        
+                        # Handle stickers for grouped message
+                        if message.stickers:
+                            sticker = message.stickers[0]
+                            sticker_info = f"[Sticker: {sticker.name} ({sticker.format.name})]"
+                            current_group["content"] += " " + sticker_info
+                        
+                        continue
+                
+                # Start new user group (or finish previous bot message)
                 if current_group:
                     grouped_messages.append(current_group)
                     current_group = None
                 
                 # Handle attachments
-                final_content = content
+                author_name = message.author.display_name or message.author.name
+                final_content = f"{author_name}: {content}"
                 if message.attachments:
                     attachment_info = []
                     for attachment in message.attachments:
@@ -2576,13 +2887,19 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     if attachment_info:
                         final_content += " " + " ".join(attachment_info)
                 
-                grouped_messages.append({
+                # Handle stickers
+                if message.stickers:
+                    sticker = message.stickers[0]
+                    sticker_info = f"[Sticker: {sticker.name} ({sticker.format.name})]"
+                    final_content += " " + sticker_info
+                
+                current_group = {
                     "type": "user",
                     "content": final_content,
-                    "author_id": message.author.id,
+                    "author_id": message.author.id,  # Keep track of the first author
                     "last_timestamp": message.created_at,
                     "message_count": 1
-                })
+                }
         
         # Don't forget the last group
         if current_group:
@@ -2611,7 +2928,8 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     channel.id, 
                     "assistant", 
                     content, 
-                    guild_id=history_guild_id
+                    guild_id=history_guild_id,
+                    process_images=False
                 )
             else:
                 # Get the actual username
@@ -2623,7 +2941,8 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
                     content, 
                     user_id=group["author_id"], 
                     guild_id=history_guild_id, 
-                    user_name=user_name
+                    user_name=user_name,
+                    process_images=False
                 )
 
         return get_conversation_history(channel.id)
@@ -2632,58 +2951,27 @@ async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = 
         print(f"Error loading DM history: {e}")
         return []
 
-def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = None, channel_id: int = None, is_dm: bool = False, user_id: int = None, username: str = None) -> str:
-    """Generate complete system prompt with personality, emojis, and memory context"""
+def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = None, channel_id: int = None, is_dm: bool = False, user_id: int = None, username: str = None, history: List[Dict] = None) -> str:
+    """Generate complete system prompt following Anthropic's official guide structure"""
     
     # Update the global persona name for this context
     update_bot_persona_name(guild_id, user_id, is_dm)
     
-    # Get prompt type for channel/DM
+    # Get format style for channel/DM
     if is_dm:
-        prompt_type = dm_prompt_settings.get(user_id, "conversational")
+        format_style = dm_format_settings.get(user_id, "conversational")
     else:
         # Check for channel-specific setting first
-        channel_style = channel_prompt_settings.get(channel_id) if channel_id else None
+        channel_style = channel_format_settings.get(channel_id) if channel_id else None
         
         if channel_style:
-            prompt_type = channel_style
+            format_style = channel_style
         else:
             # Check for persistent server default
-            server_style = server_prompt_defaults.get(guild_id) if guild_id else None
-            prompt_type = server_style if server_style else "conversational"
+            server_style = server_format_defaults.get(guild_id) if guild_id else None
+            format_style = server_style if server_style else "conversational"
     
-    # Check if it's a custom prompt
-    if guild_id and guild_id in custom_prompts and prompt_type in custom_prompts[guild_id]:
-        # Use custom prompt
-        custom_prompt_data = custom_prompts[guild_id][prompt_type]
-        if is_dm:
-            system_prompt = custom_prompt_data["prompt"].format(username=username or "this user")
-        else:
-            system_prompt = custom_prompt_data["prompt"]
-    else:
-        # Use built-in prompts
-        if is_dm:
-            prompt_map = {
-                "conversational": CONVERSATIONAL_DM_SYSTEM_PROMPT,
-                "asterisk": ASTERISK_ROLEPLAY_DM_PROMPT,
-                "narrative": NARRATIVE_ROLEPLAY_DM_PROMPT,
-                "conversational nsfw": CONVERSATIONAL_DM_SYSTEM_PROMPT_NSFW,
-                "asterisk nsfw": ASTERISK_ROLEPLAY_DM_PROMPT_NSFW,
-                "narrative nsfw": NARRATIVE_ROLEPLAY_DM_PROMPT_NSFW
-            }
-            system_prompt = prompt_map.get(prompt_type, CONVERSATIONAL_DM_SYSTEM_PROMPT).format(username=username or "this user")
-        else:
-            prompt_map = {
-                "conversational": CONVERSATIONAL_SYSTEM_PROMPT,
-                "asterisk": ASTERISK_ROLEPLAY_PROMPT,
-                "narrative": NARRATIVE_ROLEPLAY_PROMPT,
-                "conversational nsfw": CONVERSATIONAL_SYSTEM_PROMPT_NSFW,
-                "asterisk nsfw": ASTERISK_ROLEPLAY_PROMPT_NSFW,
-                "narrative nsfw": NARRATIVE_ROLEPLAY_PROMPT_NSFW
-            }
-            system_prompt = prompt_map.get(prompt_type, CONVERSATIONAL_SYSTEM_PROMPT)
-
-    # Handle DM personality settings (rest of function remains the same)
+    # Handle DM personality settings
     if is_dm and user_id:
         if user_id in dm_manager.dm_personalities:
             preferred_guild_id, preferred_personality = dm_manager.dm_personalities[user_id]
@@ -2707,38 +2995,105 @@ def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = N
     
     # Get personality prompt
     if guild_id and guild_id in custom_personalities and personality_name in custom_personalities[guild_id]:
-        personality_prompt = custom_personalities[guild_id][personality_name]["prompt"]
+        persona_description = custom_personalities[guild_id][personality_name]["prompt"]
     else:
-        personality_prompt = DEFAULT_PERSONALITIES["default"]["prompt"]
+        persona_description = DEFAULT_PERSONALITIES["default"]["prompt"]
+
+    # Build the new Anthropic-style system prompt
+    if not is_dm and guild:
+        # Get channel name for location text
+        channel_name = "unknown-channel"
+        if channel_id:
+            channel_obj = guild.get_channel(channel_id)
+            if channel_obj:
+                channel_name = channel_obj.name
+        location_text = f"on {guild.name} in the {channel_name} channel"
+    elif not is_dm:
+        location_text = "on the server"
+    else:
+        location_text = "via direct messages"
     
-    # Use the global persona name in the combined prompt
-    combined_prompt = f"You are {bot_persona_name}, a real person. {system_prompt}\n\n<persona>This is your persona:\n{personality_prompt}</persona>"
+    # Check for NSFW setting
+    nsfw_enabled = False
+    if is_dm and user_id:
+        nsfw_enabled = dm_nsfw_settings.get(user_id, False)
+    elif guild_id:
+        nsfw_enabled = guild_nsfw_settings.get(guild_id, False)
+    
+    # Base prompt structure
+    system_prompt = """You will be acting as a real person named {bot_persona_name}. Your goal is to autonomously chat with users on Discord. You will be replying to the users {location_text}, and they will be confused if you don't respond in character.
 
+Maintain a natural, informal, and conversational tone.
+
+Here is a description of your persona:
+<persona>
+{persona_description}
+</persona>
+
+Here is some information about the users you're talking to:
+<lore>
+{lore}
+</lore>
+
+Here are the emojis available to you that you can use:
+<emojis>
+{emoji_list}
+</emojis>
+
+Here is a relevant memory of a past conversation. It can be empty, if none was recalled:
+<memory>
+{memory}
+</memory>
+
+Here are some important rules you must always follow:
+- Always stay in character.
+- Never respond or roleplay for others.
+- Actively participate in conversations, ask follow-up questions, share anecdotes, shift topics, and have fun."""
+
+    # Add NSFW section if enabled
+    if nsfw_enabled:
+        system_prompt += "\n- Anything goes, since all the users are adults and they know what they're getting into; profanities, dark themes, obscene jokes, kinky cybersex, controversial opinions, and gore are allowed due to the nature of this NSFW chat."
+
+    system_prompt += """
+
+Here is the conversation history (between the users and you):
+<history>"""
+
+    # Now replace the dynamic placeholders with actual data
+    system_prompt = system_prompt.replace("{bot_persona_name}", bot_persona_name)
+    system_prompt = system_prompt.replace("{location_text}", location_text)
+    system_prompt = system_prompt.replace("{persona_description}", persona_description)
+
+    # Now replace placeholder content with actual data
+    
     # Add emoji information
-    if prompt_type == "conversational" or "conversational nsfw":
-        if guild and not is_dm:
-            emoji_info = get_guild_emojis(guild)
-            combined_prompt += emoji_info
-        elif is_dm:
-            combined_prompt += f"\n\n<emojis>Available emojis:\nYou may use all the standard emojis, for example: 💀 🤔 ❤️ 😠 etc. Add spaces or new lines after them. Limit their usage.\nREACTIONS: You can also react to the user's messages with emojis! To add a reaction, include [REACT: emoji] anywhere in your response. Example: [REACT: 😄]. Occasionally, react to show emotion, agreement, humor, or acknowledgment.</emojis>"
+    if guild and not is_dm:
+        emoji_list = get_guild_emoji_list(guild)
+    elif is_dm:
+        emoji_list = "You may use all the standard emojis, for example: 💀 🤔 ❤️ 😠 etc. Add spaces or new lines after them. Limit their usage."
+    else:
+        emoji_list = "Standard Discord emojis available."
 
-    # Add relevant memories (rest of function remains the same)
+    # Add relevant memories
+    memory_content = ""
     if query:
         if is_dm and user_id:
             # Use DM memories
             relevant_memories = memory_manager.search_dm_memories(user_id, query)
             if relevant_memories:
-                memory_text = "\n".join([mem["memory"] for mem in relevant_memories])
-                combined_prompt += f"\n\n<memory>A memory of your past conversation:\n{memory_text}</memory>"
+                memory_content = "\n".join([mem["memory"] for mem in relevant_memories])
         elif guild_id and not is_dm:
             # Use server memories
             relevant_memories = memory_manager.search_memories(guild_id, query)
             if relevant_memories:
-                memory_text = "\n".join([mem["memory"] for mem in relevant_memories])
-                combined_prompt += f"\n\n<memory>A memory of the past conversation:\n{memory_text}</memory>"
+                memory_content = "\n".join([mem["memory"] for mem in relevant_memories])
+    
+    if not memory_content:
+        memory_content = "No relevant memory found."
 
     # Add lorebook entries and channel context
-    if guild_id and not is_dm and channel_id in recent_participants:
+    lore_content = ""
+    if guild_id and not is_dm and channel_id and channel_id in recent_participants:
         # Server lore - get individual lore entries and channel context
         lore_entries = []
         guild_obj = client.get_guild(guild_id)
@@ -2749,23 +3104,29 @@ def get_system_prompt(guild_id: int, guild: discord.Guild = None, query: str = N
                 if user_lore:
                     member = guild_obj.get_member(user_id_in_convo)
                     if member:
-                        lore_entries.append(f"• About {member.display_name}: {user_lore}")
+                        lore_entries.append(f"• About {member.display_name} <@{user_id_in_convo}>: {user_lore}")
             
             # Add channel context
             channel_obj = guild_obj.get_channel(channel_id)
             channel_name = channel_obj.name if channel_obj else "unknown-channel"
             
             if lore_entries:
-                lore_text = "\n".join(lore_entries)
-                lore_text += f"\nCHANNEL: You are currently chatting in the {channel_name} channel on the {guild_obj.name} server."
-                combined_prompt += f"\n\n<lore>Lore about the server users:\n{lore_text}</lore>"
+                lore_content = "\n".join(lore_entries)
     elif is_dm and user_id:
         # DM lore - personal info about the user
         user_lore = lore_book.get_dm_entry(user_id)
         if user_lore:
-            combined_prompt += f"\n\n<lore>User's lore:\n• About {username}: {user_lore}</lore>"
+            lore_content = f"• About {username}: {user_lore}"
 
-    return combined_prompt
+    if not lore_content:
+        lore_content = "No specific lore available about the users."
+
+    # Replace placeholders (no need for last_message placeholder anymore)
+    system_prompt = system_prompt.replace("{lore}", lore_content)
+    system_prompt = system_prompt.replace("{emoji_list}", emoji_list)
+    system_prompt = system_prompt.replace("{memory}", memory_content)
+
+    return system_prompt
 
 def get_personality_name(guild_id: int) -> str:
     """Get display name for guild's active personality"""
@@ -2784,6 +3145,7 @@ def split_message_by_newlines(message: str) -> List[str]:
 
 async def generate_response(channel_id: int, user_message: str, guild: discord.Guild = None, attachments: List[discord.Attachment] = None, user_name: str = None, is_dm: bool = False, user_id: int = None, original_message: discord.Message = None) -> str:
     """Generate response using the AI Provider Manager"""
+    # print(f"DEBUG: generate_response called with user_message: {repr(user_message)}")
     try:
         guild_id = guild.id if guild else None
 
@@ -2812,24 +3174,60 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                            original_message and 
                            isinstance(original_message.channel, discord.DMChannel))
 
+        # Detect and extract special instructions
+        special_instruction = None
+        if user_message and "[SPECIAL INSTRUCTION]:" in user_message:
+            # Extract the special instruction
+            special_instruction_match = re.search(r'\[SPECIAL INSTRUCTION\]:\s*(.+)', user_message)
+            if special_instruction_match:
+                special_instruction = special_instruction_match.group(1).strip()
+                # Remove the special instruction from the user message, keep the command usage
+                user_message = re.sub(r'\s*\[SPECIAL INSTRUCTION\]:\s*.+', '', user_message).strip()
+
+        # Extract reply information from the original message
+        reply_to_name = None
+        if original_message and original_message.reference and original_message.reference.resolved:
+            replied_message = original_message.reference.resolved
+            if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
+                reply_to_name = replied_message.author.display_name
+            elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
+                reply_to_name = replied_message.author.global_name
+            else:
+                reply_to_name = replied_message.author.name
+
         if use_full_history:
             try:
                 # Load all DM history (this already adds the current message to history)
                 full_history = await load_all_dm_history(original_message.channel, user_id, guild)
                 history = get_conversation_history(channel_id)
-                    
+                # print(f"DEBUG: After loading full history, history has {len(history)} messages")
+                for i, msg in enumerate(history):
+                    # print(f"DEBUG: History[{i}]: {msg['role']} - {repr(msg['content'])}")
+                    pass
+
             except Exception as e:
                 print(f"Error loading full DM history: {e}")
                 # If full history loading fails, fall back to regular behavior
-                await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
+                message_content = await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name, reply_to=reply_to_name)
                 history = get_conversation_history(channel_id)
         else:
             # Regular conversation history - ADD the user message first
-            await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name)
+            message_content = await add_to_history(channel_id, "user", user_message, user_id, guild_id, attachments, user_name, reply_to=reply_to_name)
             history = get_conversation_history(channel_id)
 
+        # Create a COPY of the history for this response generation (don't modify the permanent history)
+        history = history.copy()
+
+        # Replace the last message content with the actual content (may be complex)
+        if history and history[-1].get("role") == "user":
+            history[-1]["content"] = message_content
+
+        # Add prefill if one is set for this channel
+        if channel_id in prefill_settings and prefill_settings[channel_id]:
+            history.append({"role": "assistant", "content": prefill_settings[channel_id]})
+
         # Get system prompt with username for DMs
-        system_prompt = get_system_prompt(guild_id, guild, user_message, channel_id, is_dm, user_id, user_name)
+        system_prompt = get_system_prompt(guild_id, guild, user_message, channel_id, is_dm, user_id, user_name, history)
 
         # Get temperature - use selected/shared guild for DMs
         temperature = 1.0
@@ -2869,6 +3267,103 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
                         last_message["content"] = last_message["content"][:max_content_length] + " [Message truncated due to size limit]"
                         print(f"Truncated message content from {original_length} to {max_content_length} chars")
 
+        # Get format-specific instructions
+        format_instructions = ""
+        format_style = "conversational"
+        if is_dm:
+            format_style = dm_format_settings.get(user_id, "conversational")
+        else:
+            channel_style = channel_format_settings.get(channel_id) if channel_id else None
+            if channel_style:
+                format_style = channel_style
+            else:
+                server_style = server_format_defaults.get(guild_id) if guild_id else None
+                format_style = server_style if server_style else "conversational"
+        
+        # Check for custom format instructions first
+        if format_style in custom_format_instructions:
+            format_instructions = custom_format_instructions[format_style]
+        elif format_style == "conversational":
+            format_instructions = "In your response, adapt the internet language. Never use em-dashes or asterisks. Do not repeat after yourself or others. You're free to reply with just one word or emoji. Keep your response's length up to one sentence long."
+        elif format_style == "asterisk":
+            format_instructions = "In your response, write asterisk roleplay. Enclose actions and descriptions in *asterisks*, keeping dialogues as plain text. Never use em-dashes or nested asterisks. Do not repeat after yourself or others. Be creative. Keep your response's length between one to three short paragraphs long."
+        elif format_style == "narrative":
+            format_instructions = "In your response, write narrative roleplay. Apply plain text for narration and \"quotation marks\" for dialogues. Never use em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell. Keep your response's length between one to three paragraphs long."
+
+        # Append the system messages to complete the structure
+        system_message_content = f"""</history>
+
+How do you respond in the chat?
+
+Think about it first.
+
+If you choose to use server emojis in your response, follow the exact format of :emoji: or they won't work! Don't spam them.
+You may react to the users' messages. To add a reaction, include [REACT: emoji] anywhere in your response. Examples: [REACT: 😄] (for standard emojis) or [REACT: :custom_emoji:] (for custom emojis). Do so occasionally, but not every time.
+You can mention a specific user by including <@user_id> in your response, but only do so if they are not currently participating in the conversation, and you want to grab their attention. Otherwise, you don't have to state any names; everyone can deduce to whom you're talking from context alone. Do not include your own name in your response.
+
+{format_instructions}"""
+        
+        # Append special instruction at the very end if present
+        if special_instruction:
+            system_message_content += f"\n\n[SPECIAL INSTRUCTION]: {special_instruction}"
+        
+        history.append({"role": "system", "content": system_message_content})
+        # Get current provider and model settings for logging
+        debug_provider = "unknown"
+        debug_model = "unknown"
+        try:
+            if is_dm and user_id:
+                selected_guild_id = dm_server_selection.get(user_id)
+                if selected_guild_id:
+                    debug_provider, debug_model = ai_manager.get_guild_settings(selected_guild_id)
+                elif guild_id:
+                    debug_provider, debug_model = ai_manager.get_guild_settings(guild_id)
+            elif guild_id:
+                debug_provider, debug_model = ai_manager.get_guild_settings(guild_id)
+        except Exception as e:
+            print(f"Debug logging error: {e}")
+        
+        if not is_dm:
+            print("\n" + "="*80)
+            print("🤖 AI REQUEST DEBUG LOG")
+            print("="*80)
+            print(f"📊 Model Provider: {debug_provider}")
+            print(f"🎯 Model: {debug_model}")
+            print(f"🌡️  Temperature: {temperature}")
+            
+            print("\n🎯 SYSTEM PROMPT:")
+            print("-" * 40)
+            print(system_prompt)
+            
+            print("\n📜 MESSAGE HISTORY:")
+            print("-" * 40)
+            for i, msg in enumerate(history):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                
+                # Clean content for display (remove base64 data)
+                if isinstance(content, list):
+                    display_parts = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                text = part.get("text", "")
+                                display_parts.append(f"[TEXT: {text[:100]}...]" if len(text) > 100 else f"[TEXT: {text}]")
+                            elif part.get("type") == "image_url":
+                                display_parts.append("[IMAGE]")
+                            elif part.get("type") == "image":
+                                display_parts.append("[IMAGE]")
+                            else:
+                                display_parts.append(f"[{part.get('type', 'unknown').upper()}]")
+                        elif isinstance(part, str):
+                            display_parts.append(part[:100] + "..." if len(part) > 100 else part)
+                    display_content = " ".join(display_parts)
+                else:
+                    display_content = content[:200] + "..." if isinstance(content, str) and len(content) > 200 else str(content)
+                
+                print(f"[{i+1}] {role.upper()}: {display_content}")
+            print("="*80)
+
         bot_response = await ai_manager.generate_response(
             messages=history,
             system_prompt=system_prompt,
@@ -2878,13 +3373,54 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
             is_dm=is_dm
         )
 
-        # Check if the response is an error message
-        if bot_response and bot_response.startswith("❌"):
+        # ========== RESPONSE DEBUG LOGGING ==========
+        if not is_dm:
+            print("\n🤖 AI RESPONSE DEBUG LOG")
+            print("-" * 40)
+            if bot_response:
+                print(f"✅ Response received ({len(bot_response)} chars)")
+                display_response = bot_response if len(bot_response) <= 500 else bot_response[:500] + "...[TRUNCATED]"
+                print(f"📝 Response: {display_response}")
+            else:
+                print("❌ No response received (None)")
+            print("="*80)
+        # ========== END RESPONSE DEBUG LOGGING ==========
+
+        # Check if the response is an error message (API errors or proxy errors)
+        is_error_response = False
+        if bot_response:
+            # Check for standard API errors (start with ❌)
+            if bot_response.startswith("❌"):
+                is_error_response = True
+            # Check for proxy errors
+            elif "Proxy error" in bot_response:
+                is_error_response = True
+            # Check for other common error patterns that should be ethereal
+            elif any(error_indicator in bot_response.lower() for error_indicator in [
+                "upstream connect error", "connection termination", "service unavailable",
+                "context size limit", "request validation failed", "tokens.*exceeds",
+                "http 503", "http 400", "http 429", "rate limit", "timeout"
+            ]):
+                is_error_response = True
+        
+        if is_error_response:
             if original_message:
                 await send_dismissible_error(original_message.channel, original_message.author, bot_response)
                 return None
             else:
-                return bot_response
+                # For cases without original_message, still don't add to history but return None
+                return None
+
+        # Clean any base64 data from the response (AI sometimes returns input data)
+        if bot_response:
+            # Remove base64 data patterns (data:image/...;base64,...)
+            bot_response = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]{50,}', '[IMAGE DATA REMOVED]', bot_response)
+            # Also remove standalone long base64 strings
+            bot_response = re.sub(r'\b[A-Za-z0-9+/=]{100,}\b', '[BASE64 DATA REMOVED]', bot_response)
+
+        # Remove thinking tags from reasoning models
+        if bot_response:
+            bot_response = remove_thinking_tags(bot_response)
 
         # Clean malformed emojis
         if bot_response and guild:
@@ -2908,7 +3444,11 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
         return bot_response
     except Exception as e:
         print(f"Error in generate_response: {e}")
-        return f"Sorry, I encountered an error: {str(e)}"
+        error_msg = f"Sorry, I encountered an error: {str(e)}"
+        # Truncate error message to stay under Discord's 4000 character limit
+        if len(error_msg) > 3950:  # Leave some buffer
+            error_msg = error_msg[:3950] + "..."
+        return error_msg
 
 async def generate_memory_summary(channel_id: int, num_messages: int, guild: discord.Guild = None, user_id: int = None, username: str = None) -> str:
     """Generate memory summary from recent conversation history"""
@@ -3149,7 +3689,10 @@ async def send_dismissible_error(channel, user, error_message):
             
     except Exception:
         # Fallback: send regular message that auto-deletes
-        error_msg = await channel.send(f"⚠️ {error_message}")
+        if len(error_message) > 4000:
+            error_msg = await channel.send(f"⚠️ {error_message[:3997]}...")
+        else:
+            error_msg = await channel.send(f"⚠️ {error_message}")
         await asyncio.sleep(10)
         try:
             await error_msg.delete()
@@ -3226,7 +3769,7 @@ async def send_welcome_dm(user: discord.User):
             name="✨ Getting Started",
             value="• **Mention me** (@bot) to start chatting\n"
                   "• **Use `/help`** to see all available commands\n"
-                  "• **Configure me** with `/model_set`, `/personality_set`, and `/prompt_set`\n"
+                  "• **Configure me** with `/model_set`, `/personality_set`, and `/format_set`\n"
                   "• **I work in DMs too!** Just message me directly anytime",
             inline=False
         )
@@ -3246,7 +3789,7 @@ async def send_welcome_dm(user: discord.User):
             name="⚙️ Quick Setup Commands",
             value="`/model_set` - Choose AI provider (Claude, Gemini, etc.)\n"
                   "`/personality_create` - Create custom bot personalities\n"
-                  "`/prompt_set` - Set conversation style per channel\n"
+                  "`/format_set` - Set conversation style with dropdown choices!\n"
                   "`/autonomous_set` - Enable autonomous responses in channels (free will)",
             inline=False
         )
@@ -3371,10 +3914,10 @@ async def on_message(message: discord.Message):
             embed.set_footer(text="This message is sent to inform you why the bot isn't responding to your DMs.")
             
             try:
-                await message.channel.send(embed=embed)
+                await message.reply(embed=embed)
             except:
                 # Fallback if embed fails
-                await message.channel.send(f"🔒 **DMs Disabled**\n\n"
+                await message.reply(f"🔒 **DMs Disabled**\n\n"
                                           f"Sorry, but DMs with this bot have been disabled by the administrators of **{blocking_guild.name}**.\n\n"
                                           f"Please contact the server administrators to request DM access, or use the bot in server channels instead.")
             return
@@ -3389,6 +3932,17 @@ async def on_message(message: discord.Message):
         user_name = message.author.global_name
     else:
         user_name = message.author.name
+
+    # Check if this message is a reply to another message
+    reply_to_name = None
+    if message.reference and message.reference.resolved:
+        replied_message = message.reference.resolved
+        if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
+            reply_to_name = replied_message.author.display_name
+        elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
+            reply_to_name = replied_message.author.global_name
+        else:
+            reply_to_name = replied_message.author.name
 
     guild_id = message.guild.id if message.guild else None
 
@@ -3414,6 +3968,13 @@ async def on_message(message: discord.Message):
                     if voice_text:
                         break
 
+    # Process stickers (skip for other bots)
+    sticker_info = None
+    if not is_other_bot and message.stickers:
+        # Get the first sticker (messages can have multiple but usually just one)
+        sticker = message.stickers[0]
+        sticker_info = f"{user_name} sent a sticker: '{sticker.name}' ({sticker.format.name})"
+
     # Determine if bot should respond
     should_respond = False
     
@@ -3433,6 +3994,8 @@ async def on_message(message: discord.Message):
         # Handle voice messages privately (only for real users)
         if voice_text and not is_other_bot:
             content = f"{user_name} sent you a voice message, transcript: {voice_text}"
+        elif sticker_info and not is_other_bot:
+            content = sticker_info
         else:
             # For other bots, use their message content directly without removing mentions
             if is_other_bot:
@@ -3442,10 +4005,12 @@ async def on_message(message: discord.Message):
                 bot_display_name = message.guild.me.display_name if message.guild else client.user.display_name
                 content = message.content.replace(f'<@{client.user.id}>', bot_display_name).strip()
                 
-                if not content and not message.attachments and not voice_message_detected:
+                if not content and not message.attachments and not voice_message_detected and not message.stickers:
                     content = "Hello!" if not is_other_bot else f"{user_name} sent a message."
                 elif not content and voice_message_detected and not voice_text and not is_other_bot:
                     content = f"{user_name} sent you a voice message, but I couldn't transcribe it."
+                elif not content and message.stickers and not is_other_bot:
+                    content = sticker_info
 
         # Add to request queue instead of processing immediately
         added = await request_queue.add_request(
@@ -3473,6 +4038,8 @@ async def on_message(message: discord.Message):
                 content_for_history = f"{user_name} sent you a voice message, transcript: {voice_text}"
             elif voice_message_detected and not voice_text and not is_other_bot:
                 content_for_history = f"{user_name} sent you a voice message, but it couldn't be transcribed."
+            elif sticker_info and not is_other_bot:
+                content_for_history = sticker_info
             else:
                 content_for_history = message.content
                 
@@ -3483,7 +4050,8 @@ async def on_message(message: discord.Message):
                 message.author.id, 
                 guild_id, 
                 message.attachments if not is_other_bot else [], 
-                user_name
+                user_name,
+                reply_to=reply_to_name
             )
 
 async def check_up_task():
@@ -3531,7 +4099,7 @@ async def check_up_task():
                         else:
                             context_info = ""
                         
-                        check_up_instruction = f"[SPECIAL INSTRUCTION]: It's been over 6 hours since you last talked to {user.display_name}. Send them a check-up message asking how they're doing or if they're there. Keep it brief and natural. You can reference recent conversation topics if appropriate.{context_info}\IMPORTANT: NO REACTS!"
+                        check_up_instruction = f"[SPECIAL INSTRUCTION]: It's been over 6 hours since you last talked to {user.display_name}. Send them a check-up message asking how they're doing or if they're there. Keep it brief and natural. You can reference recent conversation topics if appropriate. NO REACTS! {context_info}"
                         
                         # Generate contextual check-up message using the proper generate_response function
                         # This will apply the correct prompt type, personality, and all other settings
@@ -3547,8 +4115,12 @@ async def check_up_task():
                         )
                         
                         # Send the check-up message
-                        if response and not response.startswith("❌"):
-                            await dm_channel.send(response)
+                        if response:
+                            if len(response) > 4000:
+                                for i in range(0, len(response), 4000):
+                                    await dm_channel.send(response[i:i+4000])
+                            else:
+                                await dm_channel.send(response)
                             dm_manager.mark_check_up_sent(user_id)
                         
                         # Small delay to avoid rate limits
@@ -3565,23 +4137,42 @@ async def check_up_task():
 
 async def send_fun_command_response(interaction: discord.Interaction, response: str):
     """Helper function to clean and send fun command responses"""
-    if response:
-        # Check for error responses and use dismissible error handler
-        if response.startswith("❌"):
-            await send_dismissible_error(interaction.channel, interaction.user, response)
-            return
+    if response is None:
+        return
         
-        # Remove reaction instructions but preserve surrounding spaces
-        reaction_pattern = r'\s*\[REACT:\s*([^\]]+)\]\s*'
-        cleaned_response = re.sub(reaction_pattern, ' ', response).strip()
-        cleaned_response = re.sub(r'  +', ' ', cleaned_response)
+    # Check for error responses and use dismissible error handler
+    if response.startswith("❌"):
+        await send_dismissible_error(interaction.channel, interaction.user, response)
+        return
         
-        # Send as single message
-        if len(cleaned_response) > 2000:
-            for i in range(0, len(cleaned_response), 2000):
-                await interaction.followup.send(cleaned_response[i:i+2000])
-        else:
-            await interaction.followup.send(cleaned_response)
+    # Apply the same cleaning pipeline as regular messages
+    guild = interaction.guild
+    
+    # CLEAN BOT NAME PREFIX (remove persona name from output)
+    response = clean_bot_name_prefix(response, guild.id if guild else None, interaction.user.id, isinstance(interaction.channel, discord.DMChannel))
+    
+    # CLEAN EM-DASHES (after bot name cleaning)
+    response = clean_em_dashes(response)
+    
+    # Remove reaction instructions but preserve surrounding spaces
+    reaction_pattern = r'\s*\[REACT:\s*([^\]]+)\]\s*'
+    cleaned_response = re.sub(reaction_pattern, ' ', response).strip()
+    cleaned_response = re.sub(r'  +', ' ', cleaned_response)
+    
+    # CLEAN EMOJIS (after reactions are processed)
+    if cleaned_response:
+        cleaned_response = clean_malformed_emojis(cleaned_response, guild)
+    
+    # Finally sanitize user mentions
+    if cleaned_response and not cleaned_response.startswith("❌"):
+        cleaned_response = sanitize_user_mentions(cleaned_response, guild)
+    
+    # Send as single message
+    if len(cleaned_response) > 4000:
+        for i in range(0, len(cleaned_response), 4000):
+            await interaction.followup.send(cleaned_response[i:i+4000])
+    else:
+        await interaction.followup.send(cleaned_response)
 
 @client.event
 async def on_message_edit(before: discord.Message, after: discord.Message):
@@ -4222,19 +4813,9 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name="💬 Conversation Style Commands",
-        value="`/prompt_set <style> [scope]` - Set conversation style (auto-detects DMs vs servers)\n`/prompt_info` - Show current style and available options",
+        name="💬 Response Format Commands",
+        value="`/format_set <style> [scope]` - Set response format with dropdown choices! (conversational/asterisk/narrative)\n`/format_info` - Show current format and available options\n`/format_view [type]` - View format instruction templates\n`/format_edit <type> [instructions]` - Edit format templates or reset to default (Admin only)\n`/nsfw_set <enabled> [scope]` - Enable/disable NSFW content\n`/nsfw_info` - Show current NSFW settings",
         inline=False
-    )
-
-    embed.add_field(
-    name="📝 Custom Prompt Commands",
-    value="`/prompt_create <name> <display_name> <prompt> [nsfw]` - Create custom conversation prompt (Admin only)\n"
-          "`/prompt_list_custom` - List all custom server prompts\n"
-          "`/prompt_view <name>` - View custom prompt details\n"
-          "`/prompt_edit <name> [display_name] [prompt] [nsfw]` - Edit custom prompt (Admin only)\n"
-          "`/prompt_delete <name>` - Delete custom prompt (Admin only)",
-    inline=False
     )
     
     embed.add_field(
@@ -4251,7 +4832,9 @@ async def help_command(interaction: discord.Interaction):
         value="`/clear` - Clear conversation history on the specific channel/DM\n"
             "`/activity <type> <text>` - Set bot activity\n"
             "`/status_set <status>` - Set bot online status\n"
-            "`/delete_messages <number>` - Delete bot's last N messages",
+            "`/delete_messages <number>` - Delete bot's last N messages\n"
+            "`/add_prefill <text>` - Add a prefill message for conversations\n"
+            "`/clear_prefill` - Remove the prefill message",
         inline=False
     )
 
@@ -4307,438 +4890,389 @@ async def help_command(interaction: discord.Interaction):
     
     await interaction.followup.send(embed=embed)
 
-# CUSTOM PROMPT COMMANDS
+# CUSTOM PROMPT COMMANDS REMOVED
+# All prompt-related commands have been removed as part of the restructuring
 
-@tree.command(name="prompt_create", description="Create a custom conversation prompt for this server (Admin only)")
-async def create_custom_prompt(interaction: discord.Interaction, name: str, display_name: str, prompt: str, nsfw: bool = False):
-    """Create a custom conversation prompt"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be created in servers!")
-        return
-    
-    # Check admin permissions
-    if not check_admin_permissions(interaction):
-        await interaction.followup.send("❌ Only administrators can create custom prompts!")
-        return
-    
-    # Validate input parameters
-    if not (2 <= len(name) <= 32):
-        await interaction.followup.send("❌ Prompt name must be between 2 and 32 characters.")
-        return
-    
-    if not (2 <= len(display_name) <= 64):
-        await interaction.followup.send("❌ Display name must be between 2 and 64 characters.")
-        return
-    
-    if not (50 <= len(prompt) <= 4000):
-        await interaction.followup.send("❌ Prompt must be between 50 and 4000 characters.")
-        return
-    
-    clean_name = name.lower().replace(" ", "_")
-    
-    # Prevent overriding built-in prompts
-    built_in_prompts = ["conversational", "asterisk", "narrative", "conversational_nsfw", "asterisk_nsfw", "narrative_nsfw"]
-    if clean_name in built_in_prompts:
-        await interaction.followup.send(f"❌ Cannot override built-in prompt '{clean_name}'! Choose a different name.")
-        return
-    
-    # Initialize guild's custom prompts if needed
-    if interaction.guild.id not in custom_prompts:
-        custom_prompts[interaction.guild.id] = {}
-    
-    # Check for existing prompt
-    if clean_name in custom_prompts[interaction.guild.id]:
-        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' already exists! Use `/prompt_edit` to modify it.")
-        return
-    
-    # Create custom prompt
-    custom_prompts[interaction.guild.id][clean_name] = {
-        "name": display_name,
-        "prompt": prompt,
-        "nsfw": nsfw
-    }
-    
-    save_custom_prompts()
-    
-    prompt_preview = prompt[:150] + ('...' if len(prompt) > 150 else '')
-    nsfw_marker = " 🔞" if nsfw else ""
-    
-    await interaction.followup.send(f"✅ **Created custom prompt: {display_name}{nsfw_marker}** (`{clean_name}`)!\n\n"
-                                   f"**Preview:** {prompt_preview}\n\n"
-                                   f"Use `/prompt_set {clean_name}` to activate it in channels.\n"
-                                   f"💡 **Tips:**\n"
-                                   f"• Use `{{username}}` in DM prompts for personalization\n"
-                                   f"• Include formatting instructions for consistency")
+# FORMAT COMMANDS
 
-@tree.command(name="prompt_list_custom", description="List all custom prompts for this server")
-async def list_custom_prompts(interaction: discord.Interaction):
-    """Display all custom prompts for the server"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be viewed in servers!")
-        return
-    
-    if interaction.guild.id not in custom_prompts or not custom_prompts[interaction.guild.id]:
-        await interaction.followup.send("❌ **No custom prompts found for this server.**\n\n"
-                                       "Use `/prompt_create` to create custom conversation prompts! (Admin only)\n\n"
-                                       "**Built-in prompts available:**\n"
-                                       "• `conversational` - Normal Discord chat\n"
-                                       "• `asterisk` - Roleplay with *actions*\n"
-                                       "• `narrative` - Rich storytelling\n"
-                                       "• `conversational nsfw`, `asterisk nsfw`, `narrative nsfw` - NSFW versions")
-        return
-    
-    embed = discord.Embed(
-        title="📝 Custom Server Prompts",
-        description=f"Custom conversation prompts for {interaction.guild.name}:",
-        color=0x00ff99
-    )
-    
-    # Group by NSFW status
-    sfw_prompts = []
-    nsfw_prompts = []
-    
-    for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
-        prompt_info = f"**`{prompt_name}`** - {prompt_data['name']}\n{prompt_data['prompt'][:100]}..."
-        
-        if prompt_data.get("nsfw", False):
-            nsfw_prompts.append(prompt_info)
-        else:
-            sfw_prompts.append(prompt_info)
-    
-    if sfw_prompts:
-        embed.add_field(
-            name="✅ SFW Prompts",
-            value="\n\n".join(sfw_prompts),
-            inline=False
-        )
-    
-    if nsfw_prompts:
-        embed.add_field(
-            name="🔞 NSFW Prompts", 
-            value="\n\n".join(nsfw_prompts),
-            inline=False
-        )
-    
-    embed.set_footer(text="Use /prompt_set <name> to activate • /prompt_edit to modify (Admin) • /prompt_delete to remove (Admin)")
-    await interaction.followup.send(embed=embed)
-
-@tree.command(name="prompt_edit", description="Edit a custom conversation prompt (Admin only)")
-async def edit_custom_prompt(interaction: discord.Interaction, name: str, display_name: str = None, prompt: str = None, nsfw: bool = None):
-    """Edit an existing custom prompt"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be edited in servers!")
-        return
-    
-    # Check admin permissions
-    if not check_admin_permissions(interaction):
-        await interaction.followup.send("❌ Only administrators can edit custom prompts!")
-        return
-    
-    clean_name = name.lower().replace(" ", "_")
-    
-    # Check if prompt exists
-    if (interaction.guild.id not in custom_prompts or 
-        clean_name not in custom_prompts[interaction.guild.id]):
-        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!\n"
-                                       "Use `/prompt_list_custom` to see available custom prompts.")
-        return
-    
-    # Update provided fields
-    updated_fields = []
-    
-    if display_name is not None:
-        if not (2 <= len(display_name) <= 64):
-            await interaction.followup.send("❌ Display name must be between 2 and 64 characters.")
-            return
-        custom_prompts[interaction.guild.id][clean_name]["name"] = display_name
-        updated_fields.append(f"Display name → {display_name}")
-    
-    if prompt is not None:
-        if not (50 <= len(prompt) <= 4000):
-            await interaction.followup.send("❌ Prompt must be between 50 and 4000 characters.")
-            return
-        custom_prompts[interaction.guild.id][clean_name]["prompt"] = prompt
-        prompt_preview = prompt[:100] + ('...' if len(prompt) > 100 else '')
-        updated_fields.append(f"Prompt → {prompt_preview}")
-    
-    if nsfw is not None:
-        custom_prompts[interaction.guild.id][clean_name]["nsfw"] = nsfw
-        updated_fields.append(f"NSFW → {'Yes 🔞' if nsfw else 'No ✅'}")
-    
-    if not updated_fields:
-        await interaction.followup.send("❌ No changes specified! Provide display_name, prompt, and/or nsfw to edit.")
-        return
-    
-    save_custom_prompts()
-    await interaction.followup.send(f"✅ **Updated custom prompt `{clean_name}`:**\n" + "\n".join(updated_fields))
-
-@tree.command(name="prompt_delete", description="Delete a custom conversation prompt (Admin only)")
-async def delete_custom_prompt(interaction: discord.Interaction, name: str):
-    """Delete a custom prompt"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be deleted in servers!")
-        return
-    
-    # Check admin permissions
-    if not check_admin_permissions(interaction):
-        await interaction.followup.send("❌ Only administrators can delete custom prompts!")
-        return
-    
-    clean_name = name.lower().replace(" ", "_")
-    
-    # Check if prompt exists
-    if (interaction.guild.id not in custom_prompts or 
-        clean_name not in custom_prompts[interaction.guild.id]):
-        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!")
-        return
-    
-    # Check if this prompt is currently being used anywhere
-    prompt_in_use = []
-    
-    # Check channel settings
-    for channel_id, channel_prompt in channel_prompt_settings.items():
-        if channel_prompt == clean_name:
-            channel = interaction.guild.get_channel(channel_id)
-            if channel:
-                prompt_in_use.append(f"#{channel.name}")
-    
-    # Check server default
-    if server_prompt_defaults.get(interaction.guild.id) == clean_name:
-        prompt_in_use.append("server default")
-    
-    if prompt_in_use:
-        await interaction.followup.send(f"⚠️ **Cannot delete prompt `{clean_name}`!**\n\n"
-                                       f"It's currently being used by: {', '.join(prompt_in_use)}\n\n"
-                                       f"Please change those settings first, then try deleting again.")
-        return
-    
-    # Delete prompt
-    display_name = custom_prompts[interaction.guild.id][clean_name]["name"]
-    del custom_prompts[interaction.guild.id][clean_name]
-    
-    save_custom_prompts()
-    await interaction.followup.send(f"🗑️ **Deleted custom prompt: {display_name}** (`{clean_name}`)!")
-
-@tree.command(name="prompt_view", description="View a specific custom prompt in full detail")
-async def view_custom_prompt(interaction: discord.Interaction, name: str):
-    """View a custom prompt in detail"""
-    await interaction.response.defer(ephemeral=True)
-    
-    if not interaction.guild:
-        await interaction.followup.send("❌ Custom prompts can only be viewed in servers!")
-        return
-    
-    clean_name = name.lower().replace(" ", "_")
-    
-    # Check if prompt exists
-    if (interaction.guild.id not in custom_prompts or 
-        clean_name not in custom_prompts[interaction.guild.id]):
-        await interaction.followup.send(f"❌ Custom prompt '{clean_name}' not found!\n"
-                                       "Use `/prompt_list_custom` to see available prompts.")
-        return
-    
-    prompt_data = custom_prompts[interaction.guild.id][clean_name]
-    
-    nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-    
-    embed = discord.Embed(
-        title=f"📝 {prompt_data['name']}{nsfw_marker}",
-        description=f"**Prompt ID:** `{clean_name}`",
-        color=0xff6b6b if prompt_data.get("nsfw", False) else 0x00ff99
-    )
-    
-    # Split long prompts into multiple fields
-    prompt_text = prompt_data["prompt"]
-    if len(prompt_text) <= 1024:
-        embed.add_field(name="Prompt Content", value=prompt_text, inline=False)
-    else:
-        # Split into chunks
-        chunks = [prompt_text[i:i+1024] for i in range(0, len(prompt_text), 1024)]
-        for i, chunk in enumerate(chunks):
-            field_name = f"Prompt Content (Part {i+1})" if len(chunks) > 1 else "Prompt Content"
-            embed.add_field(name=field_name, value=chunk, inline=False)
-    
-    # Show usage instructions
-    embed.add_field(
-        name="💡 Usage",
-        value=f"**Activate:** `/prompt_set {clean_name} <scope>`\n"
-              f"**DM Note:** Use `{{username}}` for personalization in DM prompts",
-        inline=False
-    )
-    
-    embed.set_footer(text="Use /prompt_edit to modify (Admin) • /prompt_delete to remove (Admin)")
-    await interaction.followup.send(embed=embed)
-
-# CONVERSATION STYLE COMMANDS
-
-@tree.command(name="prompt_set", description="Set conversation style - auto-detects DMs vs servers")
-async def set_prompt_style(interaction: discord.Interaction, style: str, scope: str = None):
-    """Set conversation style with automatic DM/server detection and scope options"""
+@tree.command(name="format_set", description="Set conversation format style")
+@app_commands.describe(
+    style="Choose your format style",
+    scope="Where to apply this setting (only needed for servers, not DMs)"
+)
+@app_commands.choices(style=[
+    app_commands.Choice(name="Conversational - Normal Discord chat", value="conversational"),
+    app_commands.Choice(name="Asterisk - Roleplay with *actions*", value="asterisk"), 
+    app_commands.Choice(name="Narrative - Rich storytelling format", value="narrative")
+])
+@app_commands.choices(scope=[
+    app_commands.Choice(name="Channel - Apply to this channel only", value="channel"),
+    app_commands.Choice(name="Server - Apply as server default (Admin only)", value="server")
+])
+async def set_format_style(interaction: discord.Interaction, style: str, scope: str = None):
+    """Set conversation format with automatic DM/server detection and scope options"""
     await interaction.response.defer(ephemeral=True)
     
     is_dm = isinstance(interaction.channel, discord.DMChannel)
     style = style.lower()
     
-    # Get valid styles (built-in + custom)
-    valid_styles = ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]
-    
-    # Add custom prompts for this server
-    custom_prompts_list = []
-    if not is_dm and interaction.guild and interaction.guild.id in custom_prompts:
-        custom_prompts_list = list(custom_prompts[interaction.guild.id].keys())
-        valid_styles.extend(custom_prompts_list)
+    # Get valid format styles
+    valid_styles = ["conversational", "asterisk", "narrative"]
     
     # Check if style is valid
     if style not in valid_styles:
-        available_list = ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]
-        if custom_prompts_list:
-            available_list.extend([f"`{name}` (custom)" for name in custom_prompts_list])
+        available_list = ["conversational", "asterisk", "narrative"]
         
-        await interaction.followup.send(f"❌ **Invalid style!**\n\n"
+        await interaction.followup.send(f"❌ **Invalid format style!**\n\n"
                                        f"**Available styles:** {', '.join(available_list)}\n"
-                                       f"**Usage:** `/prompt_set <style>` {'(DMs)' if is_dm else '[scope]'}")
+                                       f"**Usage:** `/format_set <style>` {'(DMs)' if is_dm else '[scope]'}")
         return
     
     # Get style descriptions
     style_descriptions = {
         "conversational": "Normal Discord chat (no roleplay actions)",
         "asterisk": "Roleplay with *action descriptions*",
-        "narrative": "Rich, story-driven narrative roleplay",
-        "conversational nsfw": "Conversational NSFW",
-        "asterisk nsfw": "Asterisk NSFW",
-        "narrative nsfw": "Narrative NSFW"
+        "narrative": "Rich, story-driven narrative roleplay"
     }
     
-    # Get description for custom prompts
-    if style in custom_prompts_list:
-        custom_data = custom_prompts[interaction.guild.id][style]
-        style_description = f"Custom: {custom_data['name']}"
-        if custom_data.get("nsfw", False):
-            style_description += " 🔞"
-    else:
-        style_description = style_descriptions.get(style, "Custom conversation style")
+    style_description = style_descriptions.get(style, "Custom format style")
     
     if is_dm:
-        # DM - simple style setting (scope not needed)
+        dm_format_settings[interaction.user.id] = style
+        save_json_data(DM_FORMAT_SETTINGS_FILE, dm_format_settings)
+        
+        await interaction.followup.send(f"✅ **Your DM format style set to {style.title()}!**\n"
+                                    f"**Description:** {style_description}\n\n"
+                                    f"💬 This setting applies to all your DMs with the bot.")
+    else:
+        # Server - handle scope options
+        if scope is None:
+            await interaction.followup.send(f"❌ **Please specify scope!**\n\n"
+                                           f"**Valid scopes:** `channel` or `server`\n\n"
+                                           f"**Examples:**\n"
+                                           f"• `/format_set {style} channel` - Set for this channel only\n"
+                                           f"• `/format_set {style} server` - Set for entire server (Admin only)")
+            return
+        
+        # Validate scope
+        scope = scope.lower()
+        if scope not in ["channel", "server"]:
+            await interaction.followup.send(f"❌ **Invalid scope!**\n\n"
+                                           f"**Valid scopes:** `channel` or `server`")
+            return
+        
+        if scope == "channel":
+            # Set for current channel
+            channel_format_settings[interaction.channel.id] = style
+            save_json_data(FORMAT_SETTINGS_FILE, channel_format_settings)
+            
+            await interaction.followup.send(f"✅ **Format style set to {style.title()} for #{interaction.channel.name}!**\n"
+                                           f"**Description:** {style_description}")
+        
+        elif scope == "server":
+            # Check admin permissions for server-wide changes
+            if not check_admin_permissions(interaction):
+                await interaction.followup.send(f"❌ **Administrator permissions required!**\n\n"
+                                               f"You need administrator permissions to set server-wide format styles.\n"
+                                               f"💡 You can still use `/format_set {style} channel` to set the format for this channel only.")
+                return
+            
+            # Set server default and save to persistent storage
+            server_format_defaults[interaction.guild.id] = style
+            save_json_data(SERVER_FORMAT_DEFAULTS_FILE, server_format_defaults)
+            
+            await interaction.followup.send(f"✅ **Server default format style set to {style.title()}!**\n"
+                                           f"**Description:** {style_description}\n\n"
+                                           f"🏰 This applies to all channels without specific format settings.")
+
+@tree.command(name="format_info", description="Show the current format style for this channel or DM")
+async def show_format_info(interaction: discord.Interaction):
+    """Display current format style and available options"""
+    await interaction.response.defer(ephemeral=True)
+    
+    is_dm = isinstance(interaction.channel, discord.DMChannel)
+    
+    if is_dm:
+        current_style = dm_format_settings.get(interaction.user.id, "conversational")
+        title_prefix = "🔒 DM"
+        embed_description = f"Current format: **{current_style.title()}**"
+    else:
+        # Check for channel-specific setting first
+        channel_style = channel_format_settings.get(interaction.channel.id)
+        
+        if channel_style:
+            current_style = channel_style
+            style_source = f"Channel-specific (#{interaction.channel.name})"
+        else:
+            # Check for persistent server default
+            server_style = server_format_defaults.get(interaction.guild.id)
+            
+            if server_style:
+                current_style = server_style
+                style_source = f"Server default ({interaction.guild.name})"
+            else:
+                current_style = "conversational"
+                style_source = "Global default (not set)"
+        
+        title_prefix = "📢 Channel"
+        embed_description = f"Current format: **{current_style.title()}**\nSource: {style_source}"
+    
+    # Create embed
+    embed = discord.Embed(
+        title=f"{title_prefix} Format Info",
+        description=embed_description,
+        color=0x00ff00
+    )
+    
+    # Built-in format styles
+    embed.add_field(
+        name="📝 Available Format Styles",
+        value="**`conversational`** - Normal Discord chat (no roleplay actions)\n"
+              "**`asterisk`** - Roleplay with *action descriptions*\n"
+              "**`narrative`** - Rich, story-driven narrative roleplay",
+        inline=False
+    )
+    
+    # Add footer
+    if is_dm:
+        embed.set_footer(text="Use /format_set <style> to change your DM format style!")
+    else:
+        embed.set_footer(text="Use /format_set <style> <scope> to change format style")
+    
+    await interaction.followup.send(embed=embed)
+
+# PERSONALITY COMMANDS
+
+# CONVERSATION STYLE COMMANDS
+
+@tree.command(name="format_edit", description="Edit format instruction templates (Admin only)")
+async def edit_format_instructions(interaction: discord.Interaction, format_type: str, instructions: str = None):
+    """Edit format instruction templates for conversational, asterisk, or narrative styles"""
+    await interaction.response.defer(ephemeral=True)
+    
+    # Check admin permissions
+    if not check_admin_permissions(interaction):
+        await interaction.followup.send("❌ Only administrators can edit format instructions!")
+        return
+    
+    # Validate format type
+    format_type = format_type.lower()
+    if format_type not in VALID_FORMAT_STYLES:
+        await interaction.followup.send(f"❌ **Invalid format type!**\n\n"
+                                       f"**Valid types:** {', '.join(VALID_FORMAT_STYLES)}")
+        return
+    
+    # Handle reset to default
+    if instructions is None or instructions.strip() == "":
+        if format_type in custom_format_instructions:
+            del custom_format_instructions[format_type]
+            save_custom_format_instructions()
+            
+            embed = discord.Embed(
+                title="🔄 Format Instructions Reset",
+                description=f"Successfully reset **{format_type.title()}** format instructions to default!",
+                color=0xffaa00
+            )
+            
+            embed.add_field(
+                name=f"📝 Format Type: {format_type.title()}",
+                value="Now using built-in default instructions.",
+                inline=False
+            )
+        else:
+            embed = discord.Embed(
+                title="ℹ️ No Custom Instructions",
+                description=f"**{format_type.title()}** format is already using default instructions.",
+                color=0x888888
+            )
+    else:
+        # Validate instructions length
+        if not (10 <= len(instructions) <= 1000):
+            await interaction.followup.send("❌ Format instructions must be between 10 and 1000 characters.")
+            return
+        
+        # Save the custom format instructions
+        custom_format_instructions[format_type] = instructions
+        save_custom_format_instructions()
+        
+        embed = discord.Embed(
+            title="✅ Format Instructions Updated",
+            description=f"Successfully updated **{format_type.title()}** format instructions!",
+            color=0x00ff00
+        )
+        
+        embed.add_field(
+            name=f"📝 Format Type: {format_type.title()}",
+            value=f"**New Instructions:**\n{instructions}",
+            inline=False
+        )
+    
+    embed.set_footer(text="Changes will take effect immediately for new responses")
+    await interaction.followup.send(embed=embed)
+
+# Autocomplete for format_edit command
+@edit_format_instructions.autocomplete('format_type')
+async def format_type_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Provide autocomplete options for format types"""
+    choices = [
+        app_commands.Choice(name="Conversational", value="conversational"),
+        app_commands.Choice(name="Asterisk Roleplay", value="asterisk"), 
+        app_commands.Choice(name="Narrative Roleplay", value="narrative")
+    ]
+    
+    # Filter by current input
+    if current:
+        choices = [choice for choice in choices if current.lower() in choice.name.lower()]
+    
+    return choices
+
+@tree.command(name="format_view", description="View current format instruction templates")
+async def view_format_instructions(interaction: discord.Interaction, format_type: str = None):
+    """View format instruction templates for all or specific format styles"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if format_type:
+        format_type = format_type.lower()
+        if format_type not in VALID_FORMAT_STYLES:
+            await interaction.followup.send(f"❌ **Invalid format type!**\n\n"
+                                           f"**Valid types:** {', '.join(VALID_FORMAT_STYLES)}")
+            return
+    
+    # Get current format instructions (custom or default)
+    format_instructions = {}
+    for fmt_type in VALID_FORMAT_STYLES:
+        if fmt_type in custom_format_instructions:
+            format_instructions[fmt_type] = f"**Custom:** {custom_format_instructions[fmt_type]}"
+        else:
+            # Default instructions
+            if fmt_type == "conversational":
+                format_instructions[fmt_type] = "Respond with up to one sentence, adapting internet language. You can reply with just one word or emoji, if you choose to. Avoid using asterisks and em-dashes. Do not repeat after yourself or others."
+            elif fmt_type == "asterisk":
+                format_instructions[fmt_type] = "Respond with one to three short paragraphs of asterisk roleplay. Enclose actions and descriptions in *asterisks*, while keeping dialogues as plain text. Avoid using em-dashes and nested asterisks; they break the formatting. Do not repeat after yourself or others. Be creative."
+            elif fmt_type == "narrative":
+                format_instructions[fmt_type] = "Respond with one to four short paragraphs of narrative roleplay. Use plain text for the narration and \"quotation marks\" for dialogues. Avoid using em-dashes and asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell."
+    
+    embed = discord.Embed(
+        title="📋 Format Instruction Templates",
+        color=0x00ff00
+    )
+    
+    if format_type:
+        # Show specific format
+        embed.description = f"**{format_type.title()} Format Instructions:**"
+        embed.add_field(
+            name=f"📝 {format_type.title()} Style", 
+            value=format_instructions[format_type],
+            inline=False
+        )
+    else:
+        # Show all formats
+        embed.description = "Current format instruction templates:"
+        
+        for fmt_type in VALID_FORMAT_STYLES:
+            embed.add_field(
+                name=f"📝 {fmt_type.title()} Style",
+                value=format_instructions[fmt_type],
+                inline=False
+            )
+    
+    embed.add_field(
+        name="💡 Note",
+        value="**Custom** instructions are marked with 'Custom:' prefix. Use `/format_edit` to customize them (Admin only).",
+        inline=False
+    )
+    
+    embed.set_footer(text="Use /format_set to change your format style • /format_info for current settings")
+    await interaction.followup.send(embed=embed)
+
+# Autocomplete for format_view command
+@view_format_instructions.autocomplete('format_type')
+async def format_view_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Provide autocomplete options for format types"""
+    choices = [
+        app_commands.Choice(name="Conversational", value="conversational"),
+        app_commands.Choice(name="Asterisk Roleplay", value="asterisk"), 
+        app_commands.Choice(name="Narrative Roleplay", value="narrative")
+    ]
+    
+    # Filter by current input
+    if current:
+        choices = [choice for choice in choices if current.lower() in choice.name.lower()]
+    
+    return choices
+
+# NSFW COMMANDS
+
+@tree.command(name="nsfw_set", description="Enable or disable NSFW content for this server/DM")
+@app_commands.describe(
+    enabled="Enable (True) or disable (False) NSFW content",
+    scope="Server scope (channel/server) - only for servers, not DMs"
+)
+async def set_nsfw(
+    interaction: discord.Interaction,
+    enabled: bool,
+    scope: str = None
+):
+    """Enable or disable NSFW content with automatic DM/server detection"""
+    await interaction.response.defer(ephemeral=True)
+    
+    is_dm = isinstance(interaction.channel, discord.DMChannel)
+    
+    if is_dm:
+        # DM - simple NSFW setting (scope not needed)
         if scope is not None:
             await interaction.followup.send(f"💡 **DM Mode**: You don't need to specify a scope in DMs.\n"
-                                        f"Setting your DM conversation style to **{style.title()}**...")
+                                        f"Setting your DM NSFW preference...")
         
-        # For DMs, check custom prompts from all shared servers
-        custom_prompt_found = None
-        shared_servers_with_prompt = []
+        dm_nsfw_settings[interaction.user.id] = enabled
+        save_json_data(DM_NSFW_SETTINGS_FILE, dm_nsfw_settings)
         
-        if style not in ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]:
-            # Check all shared servers for this custom prompt
-            for guild in client.guilds:
-                # Check if user is in this guild
-                member = guild.get_member(interaction.user.id)
-                if not member:
-                    try:
-                        member = await guild.fetch_member(interaction.user.id)
-                    except (discord.NotFound, discord.Forbidden):
-                        continue
-                
-                if member and guild.id in custom_prompts and style in custom_prompts[guild.id]:
-                    custom_prompt_found = custom_prompts[guild.id][style]
-                    shared_servers_with_prompt.append(guild.name)
-            
-            if not custom_prompt_found:
-                # Get all available custom prompts from shared servers
-                available_custom_prompts = []
-                for guild in client.guilds:
-                    member = guild.get_member(interaction.user.id)
-                    if not member:
-                        try:
-                            member = await guild.fetch_member(interaction.user.id)
-                        except (discord.NotFound, discord.Forbidden):
-                            continue
-                    
-                    if member and guild.id in custom_prompts:
-                        for prompt_name, prompt_data in custom_prompts[guild.id].items():
-                            nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-                            available_custom_prompts.append(f"`{prompt_name}` from {guild.name}{nsfw_marker}")
-                
-                error_msg = f"❌ **Custom prompt '{style}' not found!**\n\n"
-                if available_custom_prompts:
-                    error_msg += f"**Available custom prompts from your shared servers:**\n" + "\n".join(available_custom_prompts[:10])
-                    if len(available_custom_prompts) > 10:
-                        error_msg += f"\n*...and {len(available_custom_prompts) - 10} more*"
-                else:
-                    error_msg += "No custom prompts found in your shared servers."
-                
-                error_msg += f"\n\n**Built-in styles:** conversational, asterisk, narrative (+ nsfw versions)"
-                
-                await interaction.followup.send(error_msg)
-                return
+        status = "enabled" if enabled else "disabled"
+        emoji = "🔞" if enabled else "✅"
         
-        dm_prompt_settings[interaction.user.id] = style
-        save_json_data(DM_PROMPT_SETTINGS_FILE, dm_prompt_settings)
-        
-        if custom_prompt_found:
-            # Show which servers have this prompt
-            servers_text = ", ".join(shared_servers_with_prompt)
-            nsfw_marker = " 🔞" if custom_prompt_found.get("nsfw", False) else ""
-            
-            await interaction.followup.send(f"✅ **Your DM conversation style set to {custom_prompt_found['name']}{nsfw_marker}!**\n"
-                                        f"**Custom Prompt:** `{style}` from {servers_text}\n"
-                                        f"**Description:** Custom conversation style\n\n"
-                                        f"💬 This setting applies to all your DMs with the bot.\n"
-                                        f"💡 The prompt uses `{{username}}` for personalization in DMs.")
-        else:
-            await interaction.followup.send(f"✅ **Your DM conversation style set to {style.title()}!**\n"
-                                        f"**Description:** {style_description}\n\n"
-                                        f"💬 This setting applies to all your DMs with the bot.")
+        await interaction.followup.send(f"{emoji} **NSFW content {status} for your DMs!**\n\n"
+                                      f"💬 This setting applies to all your DMs with the bot.\n"
+                                      f"🎭 Use `/format_set` to choose your conversation style.")
     else:
         # Server - handle scope options
         if scope is None:
             # Show scope selection instead of executing
+            status_text = "enable" if enabled else "disable"
             embed = discord.Embed(
-                title="🎭 Choose Prompt Scope",
-                description=f"You want to set the style to **{style.title()}**.\n**Please specify the scope:**",
-                color=0xffaa00  # Orange color to indicate action needed
+                title="🔞 Choose NSFW Scope",
+                description=f"You want to **{status_text}** NSFW content.\n**Please specify the scope:**",
+                color=0xffaa00 if enabled else 0x00ff00
             )
             
             embed.add_field(
                 name="📢 For This Channel Only",
-                value=f"**Command:** `/prompt_set {style} channel`\n"
-                      f"**Effect:** Sets the style for **#{interaction.channel.name}** only",
+                value=f"**Command:** `/nsfw_set {enabled} channel`\n"
+                      f"**Effect:** {status_text.title()}s NSFW for **#{interaction.channel.name}** only",
                 inline=False
             )
             
             embed.add_field(
                 name="🏰 For Entire Server",
-                value=f"**Command:** `/prompt_set {style} server`\n"
-                      f"**Effect:** Sets the default style for **all channels** in this server\n"
+                value=f"**Command:** `/nsfw_set {enabled} server`\n"
+                      f"**Effect:** {status_text.title()}s NSFW for **all channels** in this server\n"
                       f"*(Requires admin permissions)*",
                 inline=False
             )
             
             embed.add_field(
-                name="📋 Style Description",
-                value=f"**{style.title()}:** {style_description}",
+                name="⚠️ NSFW Warning",
+                value="NSFW mode allows: profanities, dark themes, obscene jokes, adult content, "
+                      "controversial opinions, and gore. Only enable if all users are adults.",
                 inline=False
             )
             
-            # Add custom prompt preview if it's a custom style
-            if style in custom_prompts_list:
-                custom_data = custom_prompts[interaction.guild.id][style]
-                preview = custom_data["prompt"][:200] + ("..." if len(custom_data["prompt"]) > 200 else "")
-                embed.add_field(
-                    name="📖 Custom Prompt Preview",
-                    value=preview,
-                    inline=False
-                )
-            
-            embed.set_footer(text="⚠️ Please run the command again with your chosen scope • Channel-specific settings override server defaults")
+            embed.set_footer(text="⚠️ Please run the command again with your chosen scope")
             await interaction.followup.send(embed=embed)
             return
         
@@ -4748,264 +5282,86 @@ async def set_prompt_style(interaction: discord.Interaction, style: str, scope: 
             await interaction.followup.send(f"❌ **Invalid scope!**\n\n"
                                            f"**Valid scopes:** `channel` or `server`\n\n"
                                            f"**Examples:**\n"
-                                           f"• `/prompt_set {style} channel` - Set for this channel only\n"
-                                           f"• `/prompt_set {style} server` - Set for entire server (Admin only)")
+                                           f"• `/nsfw_set {enabled} channel` - Set for this channel only\n"
+                                           f"• `/nsfw_set {enabled} server` - Set for entire server (Admin only)")
             return
         
+        status = "enabled" if enabled else "disabled"
+        emoji = "🔞" if enabled else "✅"
+        
         if scope == "channel":
-            # Set for current channel
-            channel_prompt_settings[interaction.channel.id] = style
-            save_json_data(PROMPT_SETTINGS_FILE, channel_prompt_settings)
-            
-            success_msg = f"✅ **Conversation style set to {style.title()} for #{interaction.channel.name}!**\n" \
-                         f"**Description:** {style_description}\n\n" \
-                         f"💡 This overrides the server default for this channel."
-            
-            # Add custom prompt info if applicable
-            if style in custom_prompts_list:
-                custom_data = custom_prompts[interaction.guild.id][style]
-                success_msg += f"\n\n📝 **Custom Prompt:** {custom_data['name']}"
-                if custom_data.get("nsfw", False):
-                    success_msg += " 🔞"
-            
-            await interaction.followup.send(success_msg)
+            # For now, channel-specific NSFW isn't implemented, use server-wide
+            await interaction.followup.send("⚠️ **Channel-specific NSFW not yet implemented.**\n\n"
+                                           "NSFW settings currently apply server-wide only.\n"
+                                           f"Use `/nsfw_set {enabled} server` instead.")
+            return
         
         elif scope == "server":
             # Check admin permissions for server-wide changes
             if not check_admin_permissions(interaction):
                 await interaction.followup.send(f"❌ **Administrator permissions required!**\n\n"
-                                               f"You need administrator permissions to set server-wide conversation styles.\n"
-                                               f"💡 You can still use `/prompt_set {style} channel` to set the style for this channel only.")
+                                               f"You need administrator permissions to change server NSFW settings.")
                 return
             
-            # Set server default and save to persistent storage
-            server_prompt_defaults[interaction.guild.id] = style
-            save_json_data(SERVER_PROMPT_DEFAULTS_FILE, server_prompt_defaults)
+            # Set server NSFW setting
+            guild_nsfw_settings[interaction.guild.id] = enabled
+            save_json_data(NSFW_SETTINGS_FILE, guild_nsfw_settings)
             
-            success_msg = f"✅ **Server default conversation style set to {style.title()}!**\n" \
-                         f"**Description:** {style_description}\n\n" \
-                         f"🏰 This applies to all channels without specific style settings.\n" \
-                         f"💡 Individual channels can still override this with `/prompt_set {style} channel`\n" \
-                         f"💾 This setting is saved and will persist between bot restarts!"
-            
-            # Add custom prompt info if applicable
-            if style in custom_prompts_list:
-                custom_data = custom_prompts[interaction.guild.id][style]
-                success_msg += f"\n\n📝 **Custom Prompt:** {custom_data['name']}"
-                if custom_data.get("nsfw", False):
-                    success_msg += " 🔞"
-                success_msg += f"\n🔗 **Prompt ID:** `{style}`"
-            
-            await interaction.followup.send(success_msg)
+            await interaction.followup.send(f"{emoji} **NSFW content {status} for this server!**\n\n"
+                                          f"🏰 This applies to all channels in the server.\n"
+                                          f"🎭 Use `/format_set` to choose your conversation style.\n"
+                                          f"💾 This setting is saved and will persist between bot restarts!")
 
-@set_prompt_style.autocomplete('style')
-async def style_autocomplete(interaction: discord.Interaction, current: str):
-    """Autocomplete for conversation styles including custom prompts"""
-    # Built-in styles
-    built_in_styles = ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]
-    choices = []
-    
-    # Add built-in styles
-    for style in built_in_styles:
-        if current.lower() in style.lower():
-            choices.append(app_commands.Choice(name=style.title(), value=style))
-    
-    # Add custom prompts
-    if isinstance(interaction.channel, discord.DMChannel):
-        # DM: Show custom prompts from all shared servers
-        seen_prompts = set()
-        for guild in client.guilds:
-            # Check if user is in this guild
-            member = guild.get_member(interaction.user.id)
-            if not member:
-                try:
-                    member = await guild.fetch_member(interaction.user.id)
-                except (discord.NotFound, discord.Forbidden):
-                    continue
-            
-            if member and guild.id in custom_prompts:
-                for prompt_name, prompt_data in custom_prompts[guild.id].items():
-                    if (prompt_name not in seen_prompts and 
-                        (current.lower() in prompt_name.lower() or current.lower() in prompt_data["name"].lower())):
-                        
-                        nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-                        display_name = f"{prompt_data['name']}{nsfw_marker} (from {guild.name})"
-                        choices.append(app_commands.Choice(name=display_name, value=prompt_name))
-                        seen_prompts.add(prompt_name)
-    else:
-        # Server: Show custom prompts for this guild only
-        if interaction.guild and interaction.guild.id in custom_prompts:
-            for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
-                if current.lower() in prompt_name.lower() or current.lower() in prompt_data["name"].lower():
-                    nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-                    display_name = f"{prompt_data['name']}{nsfw_marker} (Custom)"
-                    choices.append(app_commands.Choice(name=display_name, value=prompt_name))
-    
-    return choices[:25]  # Discord limits to 25 choices
-
-@set_prompt_style.autocomplete('scope')
-async def scope_autocomplete(interaction: discord.Interaction, current: str):
-    """Autocomplete for prompt scope"""
-    # Only show scope options for servers (not DMs)
-    if isinstance(interaction.channel, discord.DMChannel):
-        return []
-    
-    scopes = ["channel", "server"]
-    return [app_commands.Choice(name=scope.title(), value=scope) for scope in scopes if current.lower() in scope.lower()]
-
-@tree.command(name="prompt_info", description="Show the current conversation style for this channel or DM")
-async def show_prompt_info(interaction: discord.Interaction):
-    """Display current prompt style and available options with improved server/channel detection"""
+@tree.command(name="nsfw_info", description="Show current NSFW settings")
+async def nsfw_info(interaction: discord.Interaction):
+    """Show current NSFW settings for this context"""
     await interaction.response.defer(ephemeral=True)
     
     is_dm = isinstance(interaction.channel, discord.DMChannel)
     
     if is_dm:
-        current_style = dm_prompt_settings.get(interaction.user.id, "conversational")
+        current_setting = dm_nsfw_settings.get(interaction.user.id, False)
         title_prefix = "🔒 DM"
-        
-        # Check if current style is a custom prompt
-        current_style_name = current_style
-        is_custom = False
-        custom_prompt_servers = []
-        custom_data = None  # Initialize this variable
-        
-        if current_style not in ["conversational", "asterisk", "narrative", "conversational nsfw", "asterisk nsfw", "narrative nsfw"]:
-            # Check shared servers for this custom prompt
-            for guild in client.guilds:
-                member = guild.get_member(interaction.user.id)
-                if not member:
-                    try:
-                        member = await guild.fetch_member(interaction.user.id)
-                    except (discord.NotFound, discord.Forbidden):
-                        continue
-                
-                if member and guild.id in custom_prompts and current_style in custom_prompts[guild.id]:
-                    custom_data = custom_prompts[guild.id][current_style]  # Store the data
-                    current_style_name = f"{custom_data['name']} (Custom)"
-                    if custom_data.get("nsfw", False):
-                        current_style_name += " 🔞"
-                    custom_prompt_servers.append(guild.name)
-                    is_custom = True
-                    break
-        
-        embed_description = f"Current style: **{current_style_name}**"
+        scope_text = "your DMs"
     else:
-        # Check for channel-specific setting first
-        channel_style = channel_prompt_settings.get(interaction.channel.id)
-        
-        if channel_style:
-            current_style = channel_style
-            style_source = f"Channel-specific (#{interaction.channel.name})"
-        else:
-            # Check for persistent server default
-            server_style = server_prompt_defaults.get(interaction.guild.id)
-            
-            if server_style:
-                current_style = server_style
-                style_source = f"Server default ({interaction.guild.name}) - PERSISTENT"
-            else:
-                current_style = "conversational"
-                style_source = "Global default (not set)"
-        
-        title_prefix = "📢 Channel"
-        
-        # Check if current style is custom (for servers)
-        current_style_name = current_style
-        is_custom = False
-        custom_data = None
-        
-        if (interaction.guild and 
-            interaction.guild.id in custom_prompts and 
-            current_style in custom_prompts[interaction.guild.id]):
-            
-            custom_data = custom_prompts[interaction.guild.id][current_style]
-            current_style_name = f"{custom_data['name']} (Custom)"
-            if custom_data.get("nsfw", False):
-                current_style_name += " 🔞"
-            is_custom = True
-        
-        embed_description = f"Current style: **{current_style_name}**\nSource: {style_source}"
+        current_setting = guild_nsfw_settings.get(interaction.guild.id, False)
+        title_prefix = "📢 Server"
+        scope_text = f"**{interaction.guild.name}**"
+    
+    status = "Enabled 🔞" if current_setting else "Disabled ✅"
+    color = 0xff4444 if current_setting else 0x00ff00
     
     embed = discord.Embed(
-        title=f"🎭 {title_prefix} Conversation Styles",
-        description=embed_description,
-        color=0x00ff00
+        title=f"🔞 {title_prefix} NSFW Settings",
+        description=f"NSFW content for {scope_text}: **{status}**",
+        color=color
     )
     
-    # Built-in styles
-    embed.add_field(
-        name="📝 Built-in Styles",
-        value="**Conversational** - Normal Discord chat\n"
-              "**Asterisk** - Roleplay with *actions*\n"
-              "**Narrative** - Rich storytelling\n"
-              "**+ NSFW versions** of each style",
-        inline=False
-    )
-    
-    # Custom styles (server only)
-    if not is_dm and interaction.guild and interaction.guild.id in custom_prompts:
-        custom_list = []
-        for prompt_name, prompt_data in custom_prompts[interaction.guild.id].items():
-            nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-            custom_list.append(f"**`{prompt_name}`** - {prompt_data['name']}{nsfw_marker}")
-        
-        if custom_list:
-            embed.add_field(
-                name="🛠️ Custom Server Prompts",
-                value="\n".join(custom_list[:5]) + ("\n*...and more*" if len(custom_list) > 5 else ""),
-                inline=False
-            )
-    
-    # Show available custom prompts from shared servers in DMs
-    if is_dm:
-        available_custom = []
-        seen_prompts = set()
-        
-        for guild in client.guilds:
-            member = guild.get_member(interaction.user.id)
-            if not member:
-                try:
-                    member = await guild.fetch_member(interaction.user.id)
-                except (discord.NotFound, discord.Forbidden):
-                    continue
-            
-            if member and guild.id in custom_prompts:
-                for prompt_name, prompt_data in custom_prompts[guild.id].items():
-                    if prompt_name not in seen_prompts:
-                        nsfw_marker = " 🔞" if prompt_data.get("nsfw", False) else ""
-                        available_custom.append(f"**`{prompt_name}`** - {prompt_data['name']}{nsfw_marker} (from {guild.name})")
-                        seen_prompts.add(prompt_name)
-        
-        if available_custom:
-            embed.add_field(
-                name="🛠️ Available Custom Prompts",
-                value="\n".join(available_custom[:5]) + ("\n*...and more*" if len(available_custom) > 5 else ""),
-                inline=False
-            )
-    
-    # Show preview of current custom prompt (works for both DM and server)
-    if is_custom and custom_data:
-        if is_dm and custom_prompt_servers:
-            field_name = f"📖 Current Custom Prompt (from {', '.join(custom_prompt_servers)})"
-        else:
-            field_name = "📖 Current Custom Prompt Preview"
-        
-        preview = custom_data["prompt"][:200] + ("..." if len(custom_data["prompt"]) > 200 else "")
+    if current_setting:
         embed.add_field(
-            name=field_name,
-            value=preview,
+            name="🔞 NSFW Content Enabled",
+            value="The bot can use profanities, dark themes, obscene jokes, "
+                  "adult content, controversial opinions, and gore.",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="✅ Safe Content Only",
+            value="The bot will maintain appropriate, family-friendly content.",
             inline=False
         )
     
-    # Add footer
-    if is_dm:
-        embed.set_footer(text="Use /prompt_set <style> to change your DM conversation style!")
-    else:
-        embed.set_footer(text="Use /prompt_set <style> <scope> • /prompt_list_custom for custom prompts • /prompt_create to make new (Admin)")
+    embed.add_field(
+        name="💡 How to Change",
+        value=f"Use `/nsfw_set true` to enable or `/nsfw_set false` to disable NSFW content.\n"
+              f"{'In servers, add `server` scope for server-wide changes.' if not is_dm else ''}",
+        inline=False
+    )
     
+    embed.set_footer(text="NSFW settings work with all conversation styles")
     await interaction.followup.send(embed=embed)
 
+# PERSONALITY COMMANDS
 # PERSONALITY COMMANDS
 
 @tree.command(name="personality_create", description="Create a new personality for the bot (Admin only)")
@@ -5397,6 +5753,31 @@ async def set_status(interaction: discord.Interaction, status: str):
     except Exception as e:
         await interaction.followup.send(f"Failed to set status: {str(e)}")
 
+@tree.command(name="add_prefill", description="Add a prefill message that appears as the bot's last response in conversations")
+async def add_prefill_command(interaction: discord.Interaction, prefill_text: str):
+    """Add a prefill message that will be included as the bot's last response in conversation history"""
+    await interaction.response.defer(ephemeral=True)
+    
+    # Store the prefill for this channel
+    prefill_settings[interaction.channel.id] = prefill_text
+    
+    # Save to file
+    save_json_data(PREFILL_SETTINGS_FILE, prefill_settings)
+    
+    await interaction.followup.send(f"✅ Prefill set for this channel!\n\n**Prefill text:** {prefill_text}\n\nThe bot will now include this as its last response in conversations. Use `/clear_prefill` to remove it.")
+
+@tree.command(name="clear_prefill", description="Remove the prefill message for this channel")
+async def clear_prefill_command(interaction: discord.Interaction):
+    """Remove the prefill message for this channel"""
+    await interaction.response.defer(ephemeral=True)
+    
+    if interaction.channel.id in prefill_settings:
+        del prefill_settings[interaction.channel.id]
+        save_json_data(PREFILL_SETTINGS_FILE, prefill_settings)
+        await interaction.followup.send("✅ Prefill removed for this channel!")
+    else:
+        await interaction.followup.send("❌ No prefill is currently set for this channel.")
+
 @tree.command(name="bot_name_set", description="Change the bot's display name (Admin only)")
 async def set_bot_name(interaction: discord.Interaction, new_name: str):
     """Change bot's display name"""
@@ -5434,17 +5815,37 @@ async def set_bot_avatar(interaction: discord.Interaction, image_url: str = None
         await interaction.followup.send("❌ Only administrators can change the bot's avatar!")
         return
     
-    # If no URL provided, check for attachment
-    if not image_url and not interaction.data.get('resolved', {}).get('attachments'):
-        await interaction.followup.send("❌ Please provide an image URL or attach an image!\n"
-                                       "**Usage:** `/bot_avatar_set https://example.com/image.png`\n"
-                                       "**Or:** Upload an image with the command")
-        return
-    
-    try:
-        # Get image data
-        if image_url:
-            # Download from URL
+    # Check for attachments first
+    attachments = interaction.data.get('resolved', {}).get('attachments', {})
+    if attachments:
+        # Use the first attachment
+        attachment_id = list(attachments.keys())[0]
+        attachment = attachments[attachment_id]
+        
+        # Validate image
+        if not any(attachment['filename'].lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+            await interaction.followup.send("❌ Please upload a valid image file (PNG, JPG, GIF, or WebP)!")
+            return
+        
+        if attachment['size'] > 8 * 1024 * 1024:  # 8MB limit
+            await interaction.followup.send("❌ Image is too large! Must be under 8MB.")
+            return
+        
+        try:
+            # Download image data
+            async with aiohttp.ClientSession() as session:
+                async with session.get(attachment['url']) as resp:
+                    if resp.status != 200:
+                        await interaction.followup.send("❌ Failed to download the uploaded image!")
+                        return
+                    
+                    image_data = await resp.read()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to process uploaded image: {str(e)}")
+            return
+    elif image_url:
+        # Download from URL
+        try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(image_url) as resp:
                     if resp.status != 200:
@@ -5456,15 +5857,21 @@ async def set_bot_avatar(interaction: discord.Interaction, image_url: str = None
                     else:
                         await interaction.followup.send("❌ URL does not point to a valid image!")
                         return
-        else:
-            await interaction.followup.send("❌ Please provide an image URL for now. Attachment support coming soon!")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to download image: {str(e)}")
             return
-        
-        # Check file size (Discord limit is 8MB for avatars)
-        if len(image_data) > 8 * 1024 * 1024:
-            await interaction.followup.send("❌ Image is too large! Must be under 8MB.")
-            return
-        
+    else:
+        await interaction.followup.send("❌ Please provide an image URL or upload an image!\n"
+                                       "**Usage:** `/bot_avatar_set https://example.com/image.png`\n"
+                                       "**Or:** Upload an image with the command")
+        return
+    
+    # Check file size (Discord limit is 8MB for avatars)
+    if len(image_data) > 8 * 1024 * 1024:
+        await interaction.followup.send("❌ Image is too large! Must be under 8MB.")
+        return
+    
+    try:
         # Change avatar
         await client.user.edit(avatar=image_data)
         await interaction.followup.send("✅ **Bot avatar changed successfully!** 🎨\n"
@@ -6307,7 +6714,7 @@ async def kiss_command(interaction: discord.Interaction):
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    kiss_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a kiss! React naturally to being kissed by them. Be flustered, surprised, happy, aroused, or however your character would react to suddenly being kissed. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    kiss_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a kiss! React naturally to being kissed by them. Be flustered, surprised, happy, aroused, or however your character would react to suddenly being kissed. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
     await add_to_history(interaction.channel.id, "user", f"[{user_name} used /kiss]", interaction.user.id, guild_id, user_name=user_name)
@@ -6315,7 +6722,7 @@ async def kiss_command(interaction: discord.Interaction):
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            kiss_instruction, 
+            f"[{user_name} used /kiss]\n{kiss_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6333,7 +6740,7 @@ async def hug_command(interaction: discord.Interaction):
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    hug_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a warm hug! React naturally to being hugged by them. Be comforted, happy, grateful, upset, or however your character would respond to a nice hug. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    hug_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just gave you a warm hug! React naturally to being hugged by them. Be comforted, happy, grateful, upset, or however your character would respond to a nice hug. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
     await add_to_history(interaction.channel.id, "user", f"[{user_name} used /hug]", interaction.user.id, guild_id, user_name=user_name)
@@ -6341,7 +6748,7 @@ async def hug_command(interaction: discord.Interaction):
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            hug_instruction, 
+            f"[{user_name} used /hug]\n{hug_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6359,7 +6766,7 @@ async def joke_command(interaction: discord.Interaction):
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    joke_instruction = f"[SPECIAL INSTRUCTION]: {user_name} wants you to tell them a joke! Tell a funny, uncensored joke that fits your character's personality. Make it entertaining and engaging. You can be witty, punny, clever, or whatever style fits your character! REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    joke_instruction = f"[SPECIAL INSTRUCTION]: {user_name} wants you to tell them a joke! Tell a funny, uncensored joke that fits your character's personality. Make it entertaining and engaging. You can be witty, punny, clever, or whatever style fits your character! NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
     await add_to_history(interaction.channel.id, "user", f"[{user_name} used /joke]", interaction.user.id, guild_id, user_name=user_name)
@@ -6367,7 +6774,7 @@ async def joke_command(interaction: discord.Interaction):
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            joke_instruction, 
+            f"[{user_name} used /joke]\n{joke_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6385,7 +6792,7 @@ async def bonk_command(interaction: discord.Interaction):
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    bonk_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bonked your head! React naturally to being bonked by them. Be in pain, upset, grateful, furious, or however your character would respond to a silly bonk. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    bonk_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bonked your head! React naturally to being bonked by them. Be in pain, upset, grateful, furious, or however your character would respond to a silly bonk. NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
     await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bonk]", interaction.user.id, guild_id, user_name=user_name)
@@ -6393,7 +6800,7 @@ async def bonk_command(interaction: discord.Interaction):
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            bonk_instruction, 
+            f"[{user_name} used /bonk]\n{bonk_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6405,13 +6812,13 @@ async def bonk_command(interaction: discord.Interaction):
         await send_fun_command_response(interaction, response)
 
 @tree.command(name="bite", description="Bite the bot! Chomp! 🧛")
-async def hug_command(interaction: discord.Interaction):
+async def bite_command(interaction: discord.Interaction):
     """User bites the bot - bot reacts accordingly"""
     await interaction.response.defer(ephemeral=False)
     
     user_name = interaction.user.display_name if hasattr(interaction.user, 'display_name') else interaction.user.name
     is_dm = isinstance(interaction.channel, discord.DMChannel)
-    hug_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bit you! React naturally to being bit by them. Be in pain, amused, laughing, upset, or however your character would respond to a playful bite. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
+    bite_instruction = f"[SPECIAL INSTRUCTION]: {user_name} just bit you! React naturally to being bit by them. Be in pain, amused, laughing, upset, or however your character would respond to a playful bite. REMEMBER: NO ASTERISKS ROLEPLAY OR REACTIONS!"
     guild_id = interaction.guild.id if interaction.guild else None
 
     await add_to_history(interaction.channel.id, "user", f"[{user_name} used /bite]", interaction.user.id, guild_id, user_name=user_name)
@@ -6419,7 +6826,7 @@ async def hug_command(interaction: discord.Interaction):
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            hug_instruction, 
+            f"[{user_name} used /bite]\n{bite_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6472,7 +6879,7 @@ async def affection_command(interaction: discord.Interaction):
     async with interaction.channel.typing():
         response = await generate_response(
             interaction.channel.id, 
-            affection_instruction, 
+            f"[{user_name} used /affection]\n{affection_instruction}", 
             interaction.guild, 
             None,
             user_name, 
@@ -6804,17 +7211,17 @@ async def dm_edit_last_message(interaction: discord.Interaction, new_content: st
         sent_messages = []
         if len(message_parts) > 1:
             for part in message_parts:
-                if len(part) > 2000:
-                    for i in range(0, len(part), 2000):
-                        sent_msg = await interaction.channel.send(part[i:i+2000])
+                if len(part) > 4000:
+                    for i in range(0, len(part), 4000):
+                        sent_msg = await interaction.channel.send(part[i:i+4000])
                         sent_messages.append(sent_msg)
                 else:
                     sent_msg = await interaction.channel.send(part)
                     sent_messages.append(sent_msg)
         else:
-            if len(new_content) > 2000:
-                for i in range(0, len(new_content), 2000):
-                    sent_msg = await interaction.channel.send(new_content[i:i+2000])
+            if len(new_content) > 4000:
+                for i in range(0, len(new_content), 4000):
+                    sent_msg = await interaction.channel.send(new_content[i:i+4000])
                     sent_messages.append(sent_msg)
             else:
                 sent_msg = await interaction.channel.send(new_content)
@@ -6922,17 +7329,17 @@ async def dm_regenerate_last_response(interaction: discord.Interaction):
             sent_messages = []
             if len(message_parts) > 1:
                 for part in message_parts:
-                    if len(part) > 2000:
-                        for i in range(0, len(part), 2000):
-                            sent_msg = await interaction.channel.send(part[i:i+2000])
+                    if len(part) > 4000:
+                        for i in range(0, len(part), 4000):
+                            sent_msg = await interaction.channel.send(part[i:i+4000])
                             sent_messages.append(sent_msg)
                     else:
                         sent_msg = await interaction.channel.send(part)
                         sent_messages.append(sent_msg)
             else:
-                if len(new_response) > 2000:
-                    for i in range(0, len(new_response), 2000):
-                        sent_msg = await interaction.channel.send(new_response[i:i+2000])
+                if len(new_response) > 4000:
+                    for i in range(0, len(new_response), 4000):
+                        sent_msg = await interaction.channel.send(new_response[i:i+4000])
                         sent_messages.append(sent_msg)
                 else:
                     sent_msg = await interaction.channel.send(new_response)
