@@ -3330,11 +3330,11 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
         if format_style in custom_format_instructions:
             format_instructions = custom_format_instructions[format_style]
         elif format_style == "conversational":
-            format_instructions = "In your response, adapt the internet language. Never use em-dashes or asterisks. Do not repeat after yourself or others. You're free to reply with just one word or emoji. Keep your response's length up to one sentence long."
+            format_instructions = "In your response, adapt internet language. Never use em-dashes or asterisks. Do not repeat after yourself or others. Keep your response length up to one or two sentences. You may reply with just one word or emoji."
         elif format_style == "asterisk":
-            format_instructions = "In your response, write asterisk roleplay. Enclose actions and descriptions in *asterisks*, keeping dialogues as plain text. Never use em-dashes or nested asterisks. Do not repeat after yourself or others. Be creative. Keep your response's length between one to three short paragraphs long."
+            format_instructions = "In your response, write asterisk roleplay. Enclose actions and descriptions in *asterisks*, keeping dialogues as plain text. Never use em-dashes or nested asterisks. Do not repeat after yourself or others. Be creative. Keep your response length between one and three short paragraphs."
         elif format_style == "narrative":
-            format_instructions = "In your response, write narrative roleplay. Apply plain text for narration and \"quotation marks\" for dialogues. Never use em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell. Keep your response's length between one to three paragraphs long."
+            format_instructions = "In your response, write narrative roleplay. Apply plain text for narration and \"quotation marks\" for dialogues. Never use em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell. Keep your response length between one and three paragraphs."
 
         # Append the system messages to complete the structure
         system_message_content = f"""</history>
