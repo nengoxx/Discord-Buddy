@@ -1397,7 +1397,7 @@ class RequestQueue:
         
     async def add_request(self, channel_id: int, message: discord.Message, content: str, 
                         guild: discord.Guild, attachments: List[discord.Attachment],
-                        user_name: str, is_dm: bool, user_id: int) -> bool:
+                        user_name: str, is_dm: bool, user_id: int, reply_to_name: str = None) -> bool:
         """Add a request to the queue. Returns True if added, False if duplicate/spam"""
         # print(f"DEBUG: add_request called for channel {channel_id}, content={repr(content)}")
         
@@ -1425,7 +1425,8 @@ class RequestQueue:
                 'attachments': attachments,
                 'user_name': user_name,
                 'is_dm': is_dm,
-                'user_id': user_id
+                'user_id': user_id,
+                'reply_to_name': reply_to_name
             }
             
             self.queues[channel_id].append(request)
@@ -1472,10 +1473,25 @@ class RequestQueue:
             user_name = request['user_name']
             is_dm = request['is_dm']
             user_id = request['user_id']
+            reply_to_name = request.get('reply_to_name')
             
             async with message.channel.typing():
-                # Add the user's message to history first
-                await add_to_history(channel_id, "user", content, user_id, guild.id if guild else None, attachments, user_name)
+                # LOAD CHANNEL HISTORY IF NEEDED (for non-autonomous channels or when mentioned)
+                # This ensures the bot has context even when not participating autonomously
+                guild_id = guild.id if guild else None
+                is_autonomous = guild_id and autonomous_manager.should_respond_autonomously(guild_id, channel_id)
+                
+                # Check if we need to load history from Discord
+                current_history = get_conversation_history(channel_id)
+                
+                # Load history from Discord if:
+                # 1. Not in DM (DMs use full history feature separately)
+                # 2. Either no history exists OR not in autonomous mode (mentioned in non-autonomous channel)
+                if not is_dm and (not current_history or not is_autonomous):
+                    await load_channel_history_from_discord(message.channel, guild, channel_id)
+                
+                # Add the user's message to history
+                await add_to_history(channel_id, "user", content, user_id, guild.id if guild else None, attachments, user_name, reply_to=reply_to_name)
 
                 # Check if the last message in history is from the assistant
                 current_history = get_conversation_history(channel_id)
@@ -2799,6 +2815,98 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
 
     return message_content
 
+async def load_channel_history_from_discord(channel: discord.TextChannel, guild: discord.Guild, channel_id: int):
+    """Load recent channel history from Discord for context when bot is mentioned in non-autonomous channels"""
+    try:
+        # Get history length limit from guild settings
+        max_history_length = get_history_length(guild.id) if guild else 50
+        
+        # Clear existing conversation history for this channel to start fresh
+        if channel_id in conversations:
+            del conversations[channel_id]
+        
+        # Collect recent messages (up to the limit)
+        temp_messages = []
+        async for message in channel.history(limit=max_history_length):
+            # Skip messages from this bot to avoid adding our own responses to history
+            if message.author == client.user:
+                continue
+                
+            content = message.content.strip()
+            if not content and not message.attachments and not message.stickers:
+                continue
+                
+            temp_messages.append(message)
+        
+        # Reverse to get chronological order (oldest first)
+        temp_messages.reverse()
+        
+        # Add messages to history
+        for message in temp_messages:
+            # Get proper display name
+            if hasattr(message.author, 'display_name') and message.author.display_name:
+                author_name = message.author.display_name
+            elif hasattr(message.author, 'global_name') and message.author.global_name:
+                author_name = message.author.global_name
+            else:
+                author_name = message.author.name
+            
+            content = message.content.strip()
+            
+            # Check if message is a reply to someone
+            reply_to_name = None
+            if message.reference and message.reference.resolved:
+                replied_message = message.reference.resolved
+                if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
+                    reply_to_name = replied_message.author.display_name
+                elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
+                    reply_to_name = replied_message.author.global_name
+                else:
+                    reply_to_name = replied_message.author.name
+            
+            # Replace bot mention with bot's display name
+            bot_display_name = guild.me.display_name if guild else client.user.display_name
+            content = content.replace(f'<@{client.user.id}>', bot_display_name)
+            
+            # Handle attachments
+            if message.attachments:
+                attachment_info = []
+                for attachment in message.attachments:
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                        attachment_info.append(f"[Image: {attachment.filename}]")
+                    elif any(attachment.filename.lower().endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.m4a', '.webm']):
+                        attachment_info.append(f"[Voice message: {attachment.filename}]")
+                    else:
+                        attachment_info.append(f"[File: {attachment.filename}]")
+                
+                if attachment_info:
+                    content += " " + " ".join(attachment_info)
+            
+            # Handle stickers
+            if message.stickers:
+                sticker = message.stickers[0]
+                sticker_info = f"[Sticker: {sticker.name} ({sticker.format.name})]"
+                content += " " + sticker_info
+            
+            # Add to history with reply indicator if present
+            await add_to_history(
+                channel_id,
+                "user",
+                content,
+                message.author.id,
+                guild.id if guild else None,
+                [],  # Don't process attachments again
+                author_name,
+                process_images=False,  # Don't process images from history
+                reply_to=reply_to_name
+            )
+        
+        print(f"Loaded {len(temp_messages)} messages from channel history for context")
+        
+    except Exception as e:
+        print(f"Error loading channel history from Discord: {e}")
+        # Continue even if history loading fails
+
 async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = None) -> List[Dict]:
     """Load all messages from DM channel history and format them properly"""
     try:
@@ -4078,7 +4186,8 @@ async def on_message(message: discord.Message):
             message.attachments if not is_other_bot else [],
             user_name,
             is_dm,
-            message.author.id
+            message.author.id,
+            reply_to_name  # Pass the reply information
         )
         
         if not added:
