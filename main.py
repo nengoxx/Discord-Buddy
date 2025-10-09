@@ -1481,13 +1481,10 @@ class RequestQueue:
                 guild_id = guild.id if guild else None
                 is_autonomous = guild_id and autonomous_manager.should_respond_autonomously(guild_id, channel_id)
                 
-                # Check if we need to load history from Discord
-                current_history = get_conversation_history(channel_id)
-                
                 # Load history from Discord if:
                 # 1. Not in DM (DMs use full history feature separately)
-                # 2. Either no history exists OR not in autonomous mode (mentioned in non-autonomous channel)
-                if not is_dm and (not current_history or not is_autonomous):
+                # 2. Not in autonomous mode (bot needs to catch up on conversations it wasn't tracking)
+                if not is_dm and not is_autonomous:
                     await load_channel_history_from_discord(message.channel, guild, channel_id)
                 
                 # Add the user's message to history
@@ -2818,6 +2815,8 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
 async def load_channel_history_from_discord(channel: discord.TextChannel, guild: discord.Guild, channel_id: int):
     """Load recent channel history from Discord for context when bot is mentioned in non-autonomous channels"""
     try:
+        print(f"Loading channel history from Discord for channel {channel.name} (ID: {channel_id})...")
+        
         # Get history length limit from guild settings
         max_history_length = get_history_length(guild.id) if guild else 50
         
@@ -2901,10 +2900,12 @@ async def load_channel_history_from_discord(channel: discord.TextChannel, guild:
                 reply_to=reply_to_name
             )
         
-        print(f"Loaded {len(temp_messages)} messages from channel history for context")
+        print(f"✅ Loaded {len(temp_messages)} messages from channel history for context")
         
     except Exception as e:
-        print(f"Error loading channel history from Discord: {e}")
+        print(f"❌ Error loading channel history from Discord: {e}")
+        import traceback
+        traceback.print_exc()
         # Continue even if history loading fails
 
 async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = None) -> List[Dict]:
