@@ -1397,7 +1397,7 @@ class RequestQueue:
         
     async def add_request(self, channel_id: int, message: discord.Message, content: str, 
                         guild: discord.Guild, attachments: List[discord.Attachment],
-                        user_name: str, is_dm: bool, user_id: int) -> bool:
+                        user_name: str, is_dm: bool, user_id: int, reply_to_name: str = None) -> bool:
         """Add a request to the queue. Returns True if added, False if duplicate/spam"""
         # print(f"DEBUG: add_request called for channel {channel_id}, content={repr(content)}")
         
@@ -1425,7 +1425,8 @@ class RequestQueue:
                 'attachments': attachments,
                 'user_name': user_name,
                 'is_dm': is_dm,
-                'user_id': user_id
+                'user_id': user_id,
+                'reply_to_name': reply_to_name
             }
             
             self.queues[channel_id].append(request)
@@ -1472,10 +1473,22 @@ class RequestQueue:
             user_name = request['user_name']
             is_dm = request['is_dm']
             user_id = request['user_id']
+            reply_to_name = request.get('reply_to_name')
             
             async with message.channel.typing():
-                # Add the user's message to history first
-                await add_to_history(channel_id, "user", content, user_id, guild.id if guild else None, attachments, user_name)
+                # LOAD CHANNEL HISTORY IF NEEDED (for non-autonomous channels or when mentioned)
+                # This ensures the bot has context even when not participating autonomously
+                guild_id = guild.id if guild else None
+                is_autonomous = guild_id and autonomous_manager.should_respond_autonomously(guild_id, channel_id)
+                
+                # Load history from Discord if:
+                # 1. Not in DM (DMs use full history feature separately)
+                # 2. Not in autonomous mode (bot needs to catch up on conversations it wasn't tracking)
+                if not is_dm and not is_autonomous:
+                    await load_channel_history_from_discord(message.channel, guild, channel_id)
+                
+                # Add the user's message to history
+                await add_to_history(channel_id, "user", content, user_id, guild.id if guild else None, attachments, user_name, reply_to=reply_to_name)
 
                 # Check if the last message in history is from the assistant
                 current_history = get_conversation_history(channel_id)
@@ -1535,6 +1548,22 @@ class RequestQueue:
                 if bot_response is None:
                     return
                 
+                # Add a small delay to make responses feel more human-like
+                await asyncio.sleep(1.0)
+                
+                # Check if the response is an error that should be temporary
+                is_temp_error = bot_response.startswith("[TEMP_ERROR]")
+                if is_temp_error:
+                    bot_response = bot_response.replace("[TEMP_ERROR] ", "")
+                    # Send as dismissible error instead of regular message
+                    try:
+                        await send_dismissible_error(message.channel, message.author, bot_response)
+                        print(f"Sent dismissible error response: {bot_response[:100]}...")
+                        return  # Don't continue with normal message sending
+                    except Exception as send_error:
+                        print(f"Failed to send dismissible error response: {send_error}")
+                        # Continue with normal message sending as fallback
+                
                 # Send the response
                 message_parts = split_message_by_newlines(bot_response)
                 is_dm = isinstance(message.channel, discord.DMChannel)
@@ -1546,29 +1575,29 @@ class RequestQueue:
                         if len(part) > 4000:
                             for i in range(0, len(part), 4000):
                                 if use_reply:
-                                    sent_msg = await message.reply(part[i:i+4000])
+                                    sent_msg = await message.reply(part[i:i+4000], delete_after=15.0 if is_temp_error else None)
                                 else:
-                                    sent_msg = await message.channel.send(part[i:i+4000])
+                                    sent_msg = await message.channel.send(part[i:i+4000], delete_after=15.0 if is_temp_error else None)
                                 sent_messages.append(sent_msg)
                         else:
                             if use_reply:
-                                sent_msg = await message.reply(part)
+                                sent_msg = await message.reply(part, delete_after=15.0 if is_temp_error else None)
                             else:
-                                sent_msg = await message.channel.send(part)
+                                sent_msg = await message.channel.send(part, delete_after=15.0 if is_temp_error else None)
                             sent_messages.append(sent_msg)
                 elif bot_response:
                     if len(bot_response) > 4000:
                         for i in range(0, len(bot_response), 4000):
                             if use_reply:
-                                sent_msg = await message.reply(bot_response[i:i+4000])
+                                sent_msg = await message.reply(bot_response[i:i+4000], delete_after=15.0 if is_temp_error else None)
                             else:
-                                sent_msg = await message.channel.send(bot_response[i:i+4000])
+                                sent_msg = await message.channel.send(bot_response[i:i+4000], delete_after=15.0 if is_temp_error else None)
                             sent_messages.append(sent_msg)
                     else:
                         if use_reply:
-                            sent_msg = await message.reply(bot_response)
+                            sent_msg = await message.reply(bot_response, delete_after=15.0 if is_temp_error else None)
                         else:
-                            sent_msg = await message.channel.send(bot_response)
+                            sent_msg = await message.channel.send(bot_response, delete_after=15.0 if is_temp_error else None)
                         sent_messages.append(sent_msg)
                 
                 if len(sent_messages) > 1:
@@ -1581,9 +1610,39 @@ class RequestQueue:
                 # Truncate error message to stay under Discord's 4000 character limit
                 if len(error_msg) > 3950:  # Leave some buffer
                     error_msg = error_msg[:3950] + "..."
-                return error_msg
-            except Exception:
-                return "❌ Sorry, I encountered an error processing your request."
+                
+                # Check if this is a Discord API error that should be ephemeral/temporary
+                is_api_error = ("400 Bad Request" in str(e) or 
+                               "error code" in str(e) or 
+                               "50035" in str(e) or
+                               "Invalid Form Body" in str(e))
+                
+                if is_api_error:
+                    # Send as dismissible error message
+                    try:
+                        await send_dismissible_error(message.channel, message.author, error_msg)
+                        print(f"Sent dismissible error message: {error_msg[:100]}...")
+                    except Exception as send_error:
+                        print(f"Failed to send dismissible error message: {send_error}")
+                        # Fallback to regular temporary message
+                        try:
+                            temp_msg = await message.channel.send(error_msg, delete_after=15.0)
+                        except Exception as fallback_error:
+                            print(f"Failed to send fallback error message: {fallback_error}")
+                else:
+                    # Send regular error message
+                    try:
+                        await message.channel.send(error_msg)
+                    except Exception as send_error:
+                        print(f"Failed to send error message: {send_error}")
+                        
+            except Exception as inner_e:
+                print(f"Error in error handling: {inner_e}")
+                try:
+                    fallback_msg = "❌ Sorry, I encountered an error processing your request."
+                    await message.channel.send(fallback_msg)
+                except Exception as fallback_error:
+                    print(f"Failed to send fallback error message: {fallback_error}")
 
 # Initialize the request queue
 request_queue = RequestQueue()
@@ -2753,6 +2812,102 @@ async def add_to_history(channel_id: int, role: str, content: str, user_id: int 
 
     return message_content
 
+async def load_channel_history_from_discord(channel: discord.TextChannel, guild: discord.Guild, channel_id: int):
+    """Load recent channel history from Discord for context when bot is mentioned in non-autonomous channels"""
+    try:
+        print(f"Loading channel history from Discord for channel {channel.name} (ID: {channel_id})...")
+        
+        # Get history length limit from guild settings
+        max_history_length = get_history_length(guild.id) if guild else 50
+        
+        # Clear existing conversation history for this channel to start fresh
+        if channel_id in conversations:
+            del conversations[channel_id]
+        
+        # Collect recent messages (up to the limit)
+        temp_messages = []
+        async for message in channel.history(limit=max_history_length):
+            # Skip messages from this bot to avoid adding our own responses to history
+            if message.author == client.user:
+                continue
+                
+            content = message.content.strip()
+            if not content and not message.attachments and not message.stickers:
+                continue
+                
+            temp_messages.append(message)
+        
+        # Reverse to get chronological order (oldest first)
+        temp_messages.reverse()
+        
+        # Add messages to history
+        for message in temp_messages:
+            # Get proper display name
+            if hasattr(message.author, 'display_name') and message.author.display_name:
+                author_name = message.author.display_name
+            elif hasattr(message.author, 'global_name') and message.author.global_name:
+                author_name = message.author.global_name
+            else:
+                author_name = message.author.name
+            
+            content = message.content.strip()
+            
+            # Check if message is a reply to someone
+            reply_to_name = None
+            if message.reference and message.reference.resolved:
+                replied_message = message.reference.resolved
+                if hasattr(replied_message.author, 'display_name') and replied_message.author.display_name:
+                    reply_to_name = replied_message.author.display_name
+                elif hasattr(replied_message.author, 'global_name') and replied_message.author.global_name:
+                    reply_to_name = replied_message.author.global_name
+                else:
+                    reply_to_name = replied_message.author.name
+            
+            # Replace bot mention with bot's display name
+            bot_display_name = guild.me.display_name if guild else client.user.display_name
+            content = content.replace(f'<@{client.user.id}>', bot_display_name)
+            
+            # Handle attachments
+            if message.attachments:
+                attachment_info = []
+                for attachment in message.attachments:
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                        attachment_info.append(f"[Image: {attachment.filename}]")
+                    elif any(attachment.filename.lower().endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.m4a', '.webm']):
+                        attachment_info.append(f"[Voice message: {attachment.filename}]")
+                    else:
+                        attachment_info.append(f"[File: {attachment.filename}]")
+                
+                if attachment_info:
+                    content += " " + " ".join(attachment_info)
+            
+            # Handle stickers
+            if message.stickers:
+                sticker = message.stickers[0]
+                sticker_info = f"[Sticker: {sticker.name} ({sticker.format.name})]"
+                content += " " + sticker_info
+            
+            # Add to history with reply indicator if present
+            await add_to_history(
+                channel_id,
+                "user",
+                content,
+                message.author.id,
+                guild.id if guild else None,
+                [],  # Don't process attachments again
+                author_name,
+                process_images=False,  # Don't process images from history
+                reply_to=reply_to_name
+            )
+        
+        print(f"✅ Loaded {len(temp_messages)} messages from channel history for context")
+        
+    except Exception as e:
+        print(f"❌ Error loading channel history from Discord: {e}")
+        import traceback
+        traceback.print_exc()
+        # Continue even if history loading fails
+
 async def load_all_dm_history(channel: discord.DMChannel, user_id: int, guild = None) -> List[Dict]:
     """Load all messages from DM channel history and format them properly"""
     try:
@@ -3284,11 +3439,11 @@ async def generate_response(channel_id: int, user_message: str, guild: discord.G
         if format_style in custom_format_instructions:
             format_instructions = custom_format_instructions[format_style]
         elif format_style == "conversational":
-            format_instructions = "In your response, adapt the internet language. Never use em-dashes or asterisks. Do not repeat after yourself or others. You're free to reply with just one word or emoji. Keep your response's length up to one sentence long."
+            format_instructions = "In your response, adapt internet language. Never use em-dashes or asterisks. Do not repeat after yourself or others. Keep your response length up to one or two sentences. You may reply with just one word or emoji."
         elif format_style == "asterisk":
-            format_instructions = "In your response, write asterisk roleplay. Enclose actions and descriptions in *asterisks*, keeping dialogues as plain text. Never use em-dashes or nested asterisks. Do not repeat after yourself or others. Be creative. Keep your response's length between one to three short paragraphs long."
+            format_instructions = "In your response, write asterisk roleplay. Enclose actions and descriptions in *asterisks*, keeping dialogues as plain text. Never use em-dashes or nested asterisks. Do not repeat after yourself or others. Be creative. Keep your response length between one and three short paragraphs."
         elif format_style == "narrative":
-            format_instructions = "In your response, write narrative roleplay. Apply plain text for narration and \"quotation marks\" for dialogues. Never use em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell. Keep your response's length between one to three paragraphs long."
+            format_instructions = "In your response, write narrative roleplay. Apply plain text for narration and \"quotation marks\" for dialogues. Never use em-dashes or asterisks. Do not repeat after yourself or others. Be creative. Show, don't tell. Keep your response length between one and three paragraphs."
 
         # Append the system messages to complete the structure
         system_message_content = f"""</history>
@@ -3448,6 +3603,17 @@ You can mention a specific user by including <@user_id> in your response, but on
         # Truncate error message to stay under Discord's 4000 character limit
         if len(error_msg) > 3950:  # Leave some buffer
             error_msg = error_msg[:3950] + "..."
+        
+        # Check if this is a Discord API error that should be handled specially
+        is_api_error = ("400 Bad Request" in str(e) or 
+                       "error code" in str(e) or 
+                       "50035" in str(e) or
+                       "Invalid Form Body" in str(e))
+        
+        if is_api_error:
+            # Mark this as a temporary error that should be handled by the caller
+            error_msg = f"[TEMP_ERROR] {error_msg}"
+        
         return error_msg
 
 async def generate_memory_summary(channel_id: int, num_messages: int, guild: discord.Guild = None, user_id: int = None, username: str = None) -> str:
@@ -3981,8 +4147,8 @@ async def on_message(message: discord.Message):
     # EXPLICIT CHECK: Never respond to our own messages (double protection)
     if message.author == client.user:
         should_respond = False
-    # Respond to mentions, DMs, voice messages
-    elif client.user.mentioned_in(message) or is_dm or voice_text:
+    # Respond to mentions, DMs, voice messages (but NOT @here or @everyone)
+    elif (client.user.mentioned_in(message) and not message.mention_everyone) or is_dm or voice_text:
         should_respond = True
     # Autonomous responses (with explicit protection against own messages)
     elif (guild_id and 
@@ -4021,7 +4187,8 @@ async def on_message(message: discord.Message):
             message.attachments if not is_other_bot else [],
             user_name,
             is_dm,
-            message.author.id
+            message.author.id,
+            reply_to_name  # Pass the reply information
         )
         
         if not added:
@@ -4170,8 +4337,10 @@ async def send_fun_command_response(interaction: discord.Interaction, response: 
     # Send as single message
     if len(cleaned_response) > 4000:
         for i in range(0, len(cleaned_response), 4000):
+            await asyncio.sleep(1.0)  # Add human-like delay
             await interaction.followup.send(cleaned_response[i:i+4000])
     else:
+        await asyncio.sleep(1.0)  # Add human-like delay
         await interaction.followup.send(cleaned_response)
 
 @client.event
